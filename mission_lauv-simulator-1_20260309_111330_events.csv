@@ -1,0 +1,15 @@
+timestamp_utc,elapsed_s,event_type,ref_idx,ref_name,lat_deg,lon_deg,depth_m,followref_state,detail
+2026-03-09T11:13:49.047915+00:00,18.24,start_position_locked,-1,,63.44072739,10.35258098,0.13,,
+2026-03-09T11:13:49.050053+00:00,18.24,mission_built,-1,,,,,,n_waypoints=14 dive_depth=30.0m side=right offset=20.0m
+2026-03-09T11:13:51.049100+00:00,20.24,followref_state_change,0,,63.4407275,10.352581,0.0,StateEnum.WAIT,prev=None -> now=StateEnum.WAIT proximity=1
+2026-03-09T11:13:51.052858+00:00,20.24,reference_sent,0,DIVE,63.44029246,10.34931325,30.0,StateEnum.WAIT,final=False z_mode=depth depth=30.0m
+2026-03-09T11:13:51.053472+00:00,20.24,followref_state_change,0,,63.4407275,10.352581,0.0,StateEnum.GOTO,prev=StateEnum.WAIT -> now=StateEnum.GOTO proximity=1
+2026-03-09T11:15:28.950119+00:00,118.14,sidescan_on,1,,63.44033146,10.3496007,30.129,,active=True
+2026-03-09T11:15:28.953572+00:00,118.14,reference_sent,1,PIPE0,63.44039563,10.35008479,30.0,StateEnum.GOTO,final=False z_mode=altitude alt=5.0m
+2026-03-09T11:15:47.961868+00:00,137.15,reference_sent,2,PIPE1,63.44040115,10.35058888,40.0,StateEnum.GOTO,final=False z_mode=altitude alt=5.0m
+2026-03-09T11:16:01.981019+00:00,151.17,reference_sent,3,PIPE2,63.4404039,10.351199,50.0,StateEnum.GOTO,final=False z_mode=altitude alt=5.0m
+2026-03-09T11:16:19.996517+00:00,169.19,reference_sent,4,PIPE3,63.44040389,10.35203373,60.0,StateEnum.GOTO,final=False z_mode=altitude alt=5.0m
+2026-03-09T11:16:44.021884+00:00,193.21,reference_sent,5,PIPE4,63.44067477,10.35296043,66.0,StateEnum.GOTO,final=False z_mode=altitude alt=5.0m
+2026-03-09T11:17:15.050827+00:00,224.24,reference_sent,6,PIPE5,63.44098205,10.35399449,80.0,StateEnum.GOTO,final=False z_mode=altitude alt=5.0m
+2026-03-09T11:17:51.081647+00:00,260.27,reference_sent,7,PIPE6,63.44119062,10.35472791,85.0,StateEnum.GOTO,final=False z_mode=altitude alt=5.0m
+2026-03-09T11:18:16.102752+00:00,285.29,reference_sent,8,PIPE7,63.44137132,10.3551954,90.0,StateEnum.GOTO,final=False z_mode=altitude alt=5.0m

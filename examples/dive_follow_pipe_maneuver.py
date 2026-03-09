@@ -26,22 +26,26 @@ EARTH_RADIUS_M = 6378137.0
 # ---------------------------------------------------------------------------
 DEFAULT_TARGET = "lauv-simulator-1"
 DEFAULT_PIPE_POINTS = [
-    (63.440575,          10.350075,          30),
-    (63.44058055555555,  10.350583333333333,  40),
-    (63.44058333333333,  10.3512,             50),
-    (63.44058333333333,  10.351919444444444,  60),
-    (63.440825,          10.352747222222222,  66),
-    (63.44113333333333,  10.353786111111111,  80),
-    (63.441336111111106, 10.3545,             85),
-    (63.44150555555555,  10.354938888888888,  90),
-    (63.44158611111111,  10.355127777777778,  90),
-    (63.44218055555555,  10.355663888888888, 100),
-    (63.442775,          10.355913888888889, 109),
-    (63.443638888888884, 10.355444444444444, 115),
-    (63.44436666666666,  10.354941666666667, 120),
+    (63.4405751198, 10.3500859633,  30.22),  # idx=57   chainage=57m
+    (63.4405833333, 10.3519140583,  59.93),  # idx=148  chainage=148m
+    (63.4413382504, 10.3545055410,  85.06),  # idx=302  chainage=302m
+    (63.4415903606, 10.3551316102,  90.07),  # idx=344  chainage=344m
+    (63.4421819609, 10.3556644799, 100.02),  # idx=415  chainage=415m
+    (63.4427734651, 10.3559132434, 108.98),  # idx=482  chainage=482m
+    (63.4436376715, 10.3554451060, 114.99),  # idx=581  chainage=581m
+    (63.4443672078, 10.3549410453, 120.00),  # idx=666  chainage=666m
+    (63.4449501803, 10.3542697744, 124.94),  # idx=739  chainage=739m
+    (63.4457471642, 10.3528641150, 110.00),  # idx=852  chainage=852m
+    (63.4465093560, 10.3521499432, 110.01),  # idx=944  chainage=944m
+    (63.4475061785, 10.3520945642, 122.97),  # idx=1055 chainage=1055m
+    (63.4487719116, 10.3519883311, 127.04),  # idx=1196 chainage=1196m
+    (63.4506472715, 10.3517888866, 142.00),  # idx=1405 chainage=1405m
+    (63.4523536937, 10.3517086820, 161.91),  # idx=1595 chainage=1595m
+    (63.4535805556, 10.3517194444, 200.00),  # idx=1732 chainage=1732m
 ]
 DEFAULT_SIDE             = "right"
 DEFAULT_OFFSET_M         = 20.0
+DEFAULT_ALTITUDE_M       = 5.0       # altitude above seafloor for pipe legs
 DEFAULT_MAX_PITCH_DEG    = 10.0
 DEFAULT_ACCEPT_RADIUS    = 0.0
 DEFAULT_SPEED_MPS        = 1.6
@@ -49,7 +53,9 @@ DEFAULT_POPUP_DURATION   = 30
 DEFAULT_POPUP_TIMEOUT    = 120
 DEFAULT_POPUP_RADIUS     = 10.0
 DEFAULT_PLOT_ON_EXIT     = True
-# ---------------------------------------------------------------------------
+DEFAULT_ENABLE_SIDESCAN  = True      # activate sidescan sonar on pipe legs
+DEFAULT_SIM_MODE         = True      # use depth (pipe_depth - altitude) instead of ZUnits.ALTITUDE
+
 
 
 def parse_pipe_point(raw: str, input_in_radians: bool) -> Tuple[float, float, Optional[float]]:
@@ -84,7 +90,7 @@ class MissionLogger:
     TRACK_COLS = [
         "timestamp_utc", "elapsed_s",
         "lat_deg", "lon_deg", "depth_m",
-        "ref_idx", "followref_state",
+        "ref_idx", "followref_state", "z_mode",
     ]
     EVENT_COLS = [
         "timestamp_utc", "elapsed_s",
@@ -112,6 +118,7 @@ class MissionLogger:
         depth_m: float,
         ref_idx: int,
         followref_state: str,
+        z_mode: str = "depth",
     ) -> None:
         self._track_rows.append({
             "timestamp_utc":   datetime.now(timezone.utc).isoformat(),
@@ -121,6 +128,7 @@ class MissionLogger:
             "depth_m":         round(depth_m, 3),
             "ref_idx":         ref_idx,
             "followref_state": followref_state,
+            "z_mode":          z_mode,
         })
 
     def log_event(
@@ -327,6 +335,7 @@ class FollowRef(DynamicActor):
         pipe_points: List[Tuple[float, float]],
         pipe_point_depths: List[float],
         depth_m: float,
+        altitude_m: float = 5.0,
         pipe_side: str = "right",
         pipe_offset_m: float = 8.0,
         accept_radius_m: float = 0.0,
@@ -338,6 +347,8 @@ class FollowRef(DynamicActor):
         popup_radius_m: float = 10.0,
         popup_wait_surface: bool = True,
         popup_station_keep: bool = False,
+        enable_sidescan: bool = True,
+        sim_mode: bool = False,
     ):
         super().__init__()
         self.target = target
@@ -351,10 +362,17 @@ class FollowRef(DynamicActor):
         self.est_depth = 0.0
 
         self.pipe_points = pipe_points
-        self.pipe_point_depths = pipe_point_depths  # per-waypoint depths
-        self.depth_m = abs(float(depth_m))          # fallback / dive depth
+        self.pipe_point_depths = pipe_point_depths  # per-waypoint depths (used for dive & plotting)
+        self.depth_m = abs(float(depth_m))          # depth of the first pipe point (for plotting/logging)
+        self.altitude_m = abs(float(altitude_m))    # altitude above seafloor for PIPE legs
+        # Dive target: descend to just above the first pipe waypoint so
+        # altitude control engages immediately at the right height.
+        self.dive_depth = max(1.0, self.depth_m - self.altitude_m)
         self.pipe_side = self._validate_side(pipe_side)
         self.pipe_offset_m = abs(float(pipe_offset_m))
+        self.enable_sidescan = bool(enable_sidescan)
+        self._sidescan_active = False               # tracks whether sonar is currently on
+        self.sim_mode = bool(sim_mode)              # True → depth mode in sim, False → altitude mode
 
         self.accept_radius_m = max(0.0, float(accept_radius_m))
         self.reach_radius_m = self.accept_radius_m if self.accept_radius_m > 0.0 else 3.0
@@ -401,6 +419,45 @@ class FollowRef(DynamicActor):
             raise ValueError("pipe_side must be 'left' or 'right'")
         return side_n
 
+    # ------------------------------------------------------------------
+    # Sidescan sonar control
+    # ------------------------------------------------------------------
+
+    def _set_sidescan(self, active: bool) -> None:
+        """
+        Activate or deactivate the sidescan sonar via EntityParameter.
+        The entity name 'Sidescan' and parameter 'Active' follow the
+        standard DUNE/IMC convention used in the LSTS toolchain.
+        """
+        if not self.enable_sidescan:
+            return
+        if active == self._sidescan_active:
+            return  # already in the desired state
+        try:
+            node = self.resolve_node_id(self.target)
+            ep = imcpy.EntityParameter()
+            ep.name  = "Active"
+            ep.value = "true" if active else "false"
+
+            ec = imcpy.SetEntityParameters()
+            ec.name = "Sidescan"
+            ec.params.append(ep)
+
+            self.send(node, ec)
+            self._sidescan_active = active
+            state_str = "ON" if active else "OFF"
+            logger.info("Sidescan sonar → %s", state_str)
+            self.mlog.log_event(
+                event_type = f"sidescan_{state_str.lower()}",
+                ref_idx    = self.current_ref_idx,
+                lat_deg    = math.degrees(self.lat),
+                lon_deg    = math.degrees(self.lon),
+                depth_m    = self.est_depth,
+                detail     = f"active={active}",
+            )
+        except KeyError:
+            logger.warning("Could not resolve target to set sidescan state")
+
     def _interpolate_depth(self, wp_index: int) -> float:
         """Return depth for offset waypoint wp_index from the per-point depths list."""
         depths = self.pipe_point_depths
@@ -410,11 +467,12 @@ class FollowRef(DynamicActor):
         return abs(float(depths[idx]))
 
     def compute_dive_offset(self) -> float:
+        """Horizontal run-in distance needed to reach dive_depth at max_pitch_deg."""
         gamma = math.radians(abs(self.max_pitch_deg))
         tan_gamma = math.tan(gamma)
         if abs(tan_gamma) < 1e-6:
             raise ValueError("max_pitch_deg must be non-zero and not near 0")
-        return self.depth_m / tan_gamma
+        return self.dive_depth / tan_gamma
 
     @staticmethod
     def _line_intersection(
@@ -522,13 +580,13 @@ class FollowRef(DynamicActor):
         if not self._leg_hold_time_elapsed(self.min_dive_leg_time_s):
             return False
         elapsed = 0.0 if self.current_ref_sent_t is None else (time.time() - self.current_ref_sent_t)
-        depth_ok = self.est_depth >= max(0.0, self.depth_m - self.dive_depth_tolerance_m)
+        depth_ok = self.est_depth >= max(0.0, self.dive_depth - self.dive_depth_tolerance_m)
         if depth_ok:
             return True
         if elapsed >= self.max_dive_leg_time_s:
             logger.warning(
                 "Advancing from DIVE by timeout (elapsed=%.1fs depth=%.2fm target=%.2fm)",
-                elapsed, self.est_depth, self.depth_m,
+                elapsed, self.est_depth, self.dive_depth,
             )
             return True
         return False
@@ -542,14 +600,14 @@ class FollowRef(DynamicActor):
         if self.current_ref_idx == 0:
             if not self._leg_hold_time_elapsed(self.min_dive_leg_time_s):
                 return False
-            depth_ok = self.est_depth >= max(0.0, self.depth_m - self.dive_depth_tolerance_m)
+            depth_ok = self.est_depth >= max(0.0, self.dive_depth - self.dive_depth_tolerance_m)
             if not (depth_ok or z_near):
                 elapsed = 0.0 if self.current_ref_sent_t is None else (time.time() - self.current_ref_sent_t)
                 if elapsed < self.max_dive_leg_time_s:
                     return False
                 logger.warning(
                     "Advancing from DIVE by timeout (elapsed=%.1fs depth=%.2fm target=%.2fm)",
-                    elapsed, self.est_depth, self.depth_m,
+                    elapsed, self.est_depth, self.dive_depth,
                 )
             if not xy_near and not (allow_without_xy_near and dist is not None and dist <= thr):
                 return False
@@ -612,6 +670,7 @@ class FollowRef(DynamicActor):
             self.popup_started = True
             self.mission_done  = True
             self.last_ref      = None
+            self._set_sidescan(False)   # stop sonar at surface
             logger.info("Started PopUp maneuver (duration=%ds)", self.popup_duration_s)
             self.mlog.log_event(
                 event_type      = "popup_started",
@@ -666,7 +725,7 @@ class FollowRef(DynamicActor):
         )
 
         # Tuple layout: (name, lat, lon, depth, final)
-        mission = [("DIVE", dive_lat, dive_lon, self.depth_m, False)]
+        mission = [("DIVE", dive_lat, dive_lon, self.dive_depth, False)]
         for i, (lat, lon) in enumerate(self.offset_pipe_points):
             final        = i == (len(self.offset_pipe_points) - 1)
             depth_at_wp  = self._interpolate_depth(i)
@@ -674,8 +733,9 @@ class FollowRef(DynamicActor):
 
         self.mission_points = mission
         logger.info(
-            "Mission built: DIVE(%.1fm) + %d offset pipe waypoints (%s %.1fm)",
-            self.depth_m, len(self.offset_pipe_points), self.pipe_side, self.pipe_offset_m,
+            "Mission built: DIVE(%.1fm = pipe_depth %.1fm - alt %.1fm) + %d offset pipe waypoints (%s %.1fm)",
+            self.dive_depth, self.depth_m, self.altitude_m,
+            len(self.offset_pipe_points), self.pipe_side, self.pipe_offset_m,
         )
         for name, lat, lon, depth, final in mission:
             logger.info(
@@ -685,7 +745,8 @@ class FollowRef(DynamicActor):
         self.mlog.log_event(
             event_type = "mission_built",
             detail     = (
-                f"n_waypoints={len(mission)} dive_depth={self.depth_m:.1f}m "
+                f"n_waypoints={len(mission)} "
+                f"dive_depth={self.dive_depth:.1f}m (pipe={self.depth_m:.1f}m - alt={self.altitude_m:.1f}m) "
                 f"side={self.pipe_side} offset={self.pipe_offset_m:.1f}m"
             ),
         )
@@ -704,7 +765,6 @@ class FollowRef(DynamicActor):
             logger.info("Mission finished: all references sent")
             return
 
-        # Unpack 5-tuple including per-waypoint depth
         ref_name, lat, lon, wp_depth, final = self.mission_points[self.current_ref_idx]
         try:
             node = self.resolve_node_id(self.target)
@@ -715,10 +775,28 @@ class FollowRef(DynamicActor):
         r.lat = lat
         r.lon = lon
 
-        dz         = imcpy.DesiredZ()
-        dz.value   = wp_depth          # <-- per-waypoint depth (fixed)
-        dz.z_units = imcpy.ZUnits.DEPTH
-        r.z        = dz
+        dz = imcpy.DesiredZ()
+        is_dive = (self.current_ref_idx == 0)
+        if is_dive:
+            # DIVE leg: descend to (first_pipe_depth - altitude) so the vehicle
+            # enters altitude control at exactly the right height above the pipe.
+            dz.value   = self.dive_depth
+            dz.z_units = imcpy.ZUnits.DEPTH
+            z_label    = f"depth={self.dive_depth:.1f}m"
+            self._set_sidescan(False)   # sonar off during dive
+        else:
+            # PIPE legs: altitude above seafloor (real vehicle) or
+            # pipe_depth - altitude (simulator, no DVL seabed model).
+            if self.sim_mode:
+                dz.value   = max(1.0, wp_depth - self.altitude_m)
+                dz.z_units = imcpy.ZUnits.DEPTH
+                z_label    = f"sim_depth={dz.value:.1f}m (pipe={wp_depth:.1f}m - alt={self.altitude_m:.1f}m)"
+            else:
+                dz.value   = self.altitude_m
+                dz.z_units = imcpy.ZUnits.ALTITUDE
+                z_label    = f"alt={self.altitude_m:.1f}m"
+            self._set_sidescan(True)    # sonar on while scanning pipe
+        r.z = dz
 
         ds              = imcpy.DesiredSpeed()
         ds.value        = self.speed_mps
@@ -732,13 +810,13 @@ class FollowRef(DynamicActor):
         )
 
         logger.info(
-            "Sending reference %s idx=%d lat=%.7f lon=%.7f depth=%.1fm final=%s",
+            "Sending reference %s idx=%d lat=%.7f lon=%.7f %s final=%s",
             ref_name, self.current_ref_idx,
-            math.degrees(lat), math.degrees(lon), wp_depth, str(final),
+            math.degrees(lat), math.degrees(lon), z_label, str(final),
         )
-        self.current_target    = (lat, lon)
+        self.current_target     = (lat, lon)
         self.current_ref_sent_t = time.time()
-        self.last_ref          = r
+        self.last_ref           = r
         self.sent_refs.append((lat, lon))
         self.send(node, r)
         self.mlog.log_event(
@@ -747,9 +825,9 @@ class FollowRef(DynamicActor):
             ref_name        = ref_name,
             lat_deg         = math.degrees(lat),
             lon_deg         = math.degrees(lon),
-            depth_m         = wp_depth,
+            depth_m         = wp_depth,           # planned pipe depth (for logging/plotting)
             followref_state = str(self.state) if self.state is not None else "",
-            detail          = f"final={final}",
+            detail          = f"final={final} z_mode={'depth' if is_dive else ('sim_depth' if self.sim_mode else 'altitude')} {z_label}",
         )
 
     def send_next_reference(self):
@@ -1040,13 +1118,14 @@ class FollowRef(DynamicActor):
             return
         self.lat, self.lon, _ = imcpy.coordinates.toWGS84(msg)
         self.est_depth = float(msg.depth)
-        self.est_track.append((self.lat, self.lon, self.est_depth))   # store depth per point
+        self.est_track.append((self.lat, self.lon, self.est_depth))
         self.mlog.log_track(
             lat_deg         = math.degrees(self.lat),
             lon_deg         = math.degrees(self.lon),
             depth_m         = self.est_depth,
             ref_idx         = self.current_ref_idx,
             followref_state = str(self.state) if self.state is not None else "UNKNOWN",
+            z_mode          = "depth" if self.current_ref_idx == 0 else ("sim_depth" if self.sim_mode else "altitude"),
         )
         if self.start_lat is None:
             self.start_lat = self.lat
@@ -1128,13 +1207,15 @@ if __name__ == "__main__":
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
     parser = argparse.ArgumentParser(
-        description="Dive to depth then follow pipe in parallel offset path (global pipe coordinates)."
+        description="Dive to depth then follow pipe at fixed altitude with optional sidescan sonar."
     )
     parser.add_argument("--target", default=DEFAULT_TARGET)
     parser.add_argument("--pipe-point", action="append", default=None,
                         help='Override pipe points: "lat,lon,depth". Repeat in order.')
     parser.add_argument("--input-radians", action="store_true")
     parser.add_argument("--pipe-depth", type=float, default=None)
+    parser.add_argument("--altitude", type=float, default=DEFAULT_ALTITUDE_M,
+                        help="Altitude above seafloor for pipe following (default: 5.0 m)")
     parser.add_argument("--side", choices=("left", "right"), default=DEFAULT_SIDE)
     parser.add_argument("--offset", type=float, default=DEFAULT_OFFSET_M)
     parser.add_argument("--accept-radius", type=float, default=DEFAULT_ACCEPT_RADIUS)
@@ -1146,6 +1227,14 @@ if __name__ == "__main__":
     parser.add_argument("--popup-radius", type=float, default=DEFAULT_POPUP_RADIUS)
     parser.add_argument("--no-popup-wait-surface", action="store_true")
     parser.add_argument("--popup-station-keep", action="store_true")
+    parser.add_argument("--no-sidescan", action="store_true",
+                        help="Disable sidescan sonar activation during pipe following")
+    parser.add_argument("--sim-mode", action="store_true", default=DEFAULT_SIM_MODE,
+                        help=(
+                            "Simulator mode: command depth=(pipe_depth - altitude) per waypoint "
+                            "instead of ZUnits.ALTITUDE. Use this when the simulator has no "
+                            "bathymetry model. Remove for real vehicle deployment."
+                        ))
     parser.add_argument("--plot-on-exit", action="store_true", default=DEFAULT_PLOT_ON_EXIT)
     args = parser.parse_args()
 
@@ -1153,7 +1242,6 @@ if __name__ == "__main__":
     if args.pipe_point:
         parsed = [parse_pipe_point(p, input_in_radians=args.input_radians) for p in args.pipe_point]
     else:
-        # Convert default degrees to radians to match internal representation
         parsed = [
             (math.radians(lat), math.radians(lon), depth)
             for lat, lon, depth in DEFAULT_PIPE_POINTS
@@ -1162,7 +1250,6 @@ if __name__ == "__main__":
     if len(parsed) < 2:
         raise ValueError("Provide at least two pipe points.")
 
-    # Determine fallback depth (used for the DIVE leg)
     point_depths = [d for _, _, d in parsed if d is not None]
     if args.pipe_depth is not None:
         depth_m = args.pipe_depth
@@ -1175,21 +1262,24 @@ if __name__ == "__main__":
     pipe_point_depths = [d if d is not None else depth_m for _, _, d in parsed]
 
     actor = FollowRef(
-        target              = args.target,
-        pipe_points         = pipe_points,
-        pipe_point_depths   = pipe_point_depths,
-        depth_m             = depth_m,
-        pipe_side           = args.side,
-        pipe_offset_m       = args.offset,
-        accept_radius_m     = args.accept_radius,
-        max_pitch_deg       = args.max_pitch_deg,
+        target                  = args.target,
+        pipe_points             = pipe_points,
+        pipe_point_depths       = pipe_point_depths,
+        depth_m                 = depth_m,
+        altitude_m              = args.altitude,
+        pipe_side               = args.side,
+        pipe_offset_m           = args.offset,
+        accept_radius_m         = args.accept_radius,
+        max_pitch_deg           = args.max_pitch_deg,
         dive_heading_offset_deg = args.dive_heading_offset_deg,
-        speed_mps           = args.speed,
-        popup_duration_s    = args.popup_duration,
-        popup_timeout_s     = args.popup_timeout,
-        popup_radius_m      = args.popup_radius,
-        popup_wait_surface  = not args.no_popup_wait_surface,
-        popup_station_keep  = args.popup_station_keep,
+        speed_mps               = args.speed,
+        popup_duration_s        = args.popup_duration,
+        popup_timeout_s         = args.popup_timeout,
+        popup_radius_m          = args.popup_radius,
+        popup_wait_surface      = not args.no_popup_wait_surface,
+        popup_station_keep      = args.popup_station_keep,
+        enable_sidescan         = not args.no_sidescan,
+        sim_mode                = args.sim_mode,
     )
     try:
         actor.run()
