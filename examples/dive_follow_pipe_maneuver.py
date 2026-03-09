@@ -18,6 +18,36 @@ logger = logging.getLogger("examples.DiveFollowPipe")
 
 EARTH_RADIUS_M = 6378137.0
 
+# ---------------------------------------------------------------------------
+# Default mission configuration (replaces terminal arguments)
+# ---------------------------------------------------------------------------
+DEFAULT_TARGET = "lauv-simulator-1"
+DEFAULT_PIPE_POINTS = [
+    (63.440575,          10.350075,          30),
+    (63.44058055555555,  10.350583333333333,  40),
+    (63.44058333333333,  10.3512,             50),
+    (63.44058333333333,  10.351919444444444,  60),
+    (63.440825,          10.352747222222222,  66),
+    (63.44113333333333,  10.353786111111111,  80),
+    (63.441336111111106, 10.3545,             85),
+    (63.44150555555555,  10.354938888888888,  90),
+    (63.44158611111111,  10.355127777777778,  90),
+    (63.44218055555555,  10.355663888888888, 100),
+    (63.442775,          10.355913888888889, 109),
+    (63.443638888888884, 10.355444444444444, 115),
+    (63.44436666666666,  10.354941666666667, 120),
+]
+DEFAULT_SIDE             = "right"
+DEFAULT_OFFSET_M         = 20.0
+DEFAULT_MAX_PITCH_DEG    = 10.0
+DEFAULT_ACCEPT_RADIUS    = 0.0
+DEFAULT_SPEED_MPS        = 1.6
+DEFAULT_POPUP_DURATION   = 30
+DEFAULT_POPUP_TIMEOUT    = 120
+DEFAULT_POPUP_RADIUS     = 10.0
+DEFAULT_PLOT_ON_EXIT     = True
+# ---------------------------------------------------------------------------
+
 
 def parse_pipe_point(raw: str, input_in_radians: bool) -> Tuple[float, float, Optional[float]]:
     parts = [p.strip() for p in raw.split(",")]
@@ -40,6 +70,7 @@ class FollowRef(DynamicActor):
         self,
         target: str,
         pipe_points: List[Tuple[float, float]],
+        pipe_point_depths: List[float],
         depth_m: float,
         pipe_side: str = "right",
         pipe_offset_m: float = 8.0,
@@ -65,11 +96,11 @@ class FollowRef(DynamicActor):
         self.est_depth = 0.0
 
         self.pipe_points = pipe_points
-        self.depth_m = abs(float(depth_m))
+        self.pipe_point_depths = pipe_point_depths  # per-waypoint depths
+        self.depth_m = abs(float(depth_m))          # fallback / dive depth
         self.pipe_side = self._validate_side(pipe_side)
         self.pipe_offset_m = abs(float(pipe_offset_m))
 
-        # If user sets accept_radius_m = 0, use a conservative fallback.
         self.accept_radius_m = max(0.0, float(accept_radius_m))
         self.reach_radius_m = self.accept_radius_m if self.accept_radius_m > 0.0 else 3.0
 
@@ -82,8 +113,8 @@ class FollowRef(DynamicActor):
         self.popup_wait_surface = bool(popup_wait_surface)
         self.popup_station_keep = bool(popup_station_keep)
 
-        # Mission point tuple: (name, lat, lon, final)
-        self.mission_points: Optional[List[Tuple[str, float, float, bool]]] = None
+        # Mission point tuple: (name, lat, lon, depth, final)
+        self.mission_points: Optional[List[Tuple[str, float, float, float, bool]]] = None
         self.current_ref_idx = 0
         self.current_target = None
         self.last_ref = None
@@ -91,7 +122,6 @@ class FollowRef(DynamicActor):
         self.popup_started = False
         self.current_ref_sent_t = None
 
-        # Mission timing gates
         self.min_dive_leg_time_s = 8.0
         self.max_dive_leg_time_s = 25.0
         self.dive_depth_tolerance_m = 0.7
@@ -101,12 +131,24 @@ class FollowRef(DynamicActor):
         self.est_track: List[Tuple[float, float]] = []
         self.offset_pipe_points: List[Tuple[float, float]] = []
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _validate_side(side: str) -> str:
         side_n = side.strip().lower()
         if side_n not in ("left", "right"):
             raise ValueError("pipe_side must be 'left' or 'right'")
         return side_n
+
+    def _interpolate_depth(self, wp_index: int) -> float:
+        """Return depth for offset waypoint wp_index from the per-point depths list."""
+        depths = self.pipe_point_depths
+        if not depths:
+            return self.depth_m
+        idx = min(wp_index, len(depths) - 1)
+        return abs(float(depths[idx]))
 
     def compute_dive_offset(self) -> float:
         gamma = math.radians(abs(self.max_pitch_deg))
@@ -169,7 +211,6 @@ class FollowRef(DynamicActor):
                 seg_normals.append((0.0, 0.0))
             else:
                 seg_dirs.append((v[0] / norm, v[1] / norm))
-                # Right normal in N/E frame.
                 seg_normals.append((-v[1] / norm, v[0] / norm))
 
         p0 = points_ne[0]
@@ -217,57 +258,43 @@ class FollowRef(DynamicActor):
         return (time.time() - self.current_ref_sent_t) >= min_time_s
 
     def _is_dive_leg_complete(self) -> bool:
-        # Only applies to idx=0 (the DIVE point)
         if self.current_ref_idx != 0:
             return True
-
-        # Dive leg is about reaching depth with enough run-in distance/time,
-        # not necessarily passing exactly over the dive XY point.
         if not self._leg_hold_time_elapsed(self.min_dive_leg_time_s):
             return False
-
         elapsed = 0.0 if self.current_ref_sent_t is None else (time.time() - self.current_ref_sent_t)
         depth_ok = self.est_depth >= max(0.0, self.depth_m - self.dive_depth_tolerance_m)
         if depth_ok:
             return True
-
-        # Failsafe: do not stall forever on DIVE if depth estimate is noisy.
         if elapsed >= self.max_dive_leg_time_s:
             logger.warning(
                 "Advancing from DIVE by timeout (elapsed=%.1fs depth=%.2fm target=%.2fm)",
-                elapsed,
-                self.est_depth,
-                self.depth_m,
+                elapsed, self.est_depth, self.depth_m,
             )
             return True
         return False
 
     def _try_advance_mission(self, msg: imcpy.FollowRefState, allow_without_xy_near: bool = False) -> bool:
         xy_near = bool(msg.proximity & imcpy.FollowRefState.ProximityBits.XY_NEAR)
-        z_near = bool(msg.proximity & imcpy.FollowRefState.ProximityBits.Z_NEAR)
+        z_near  = bool(msg.proximity & imcpy.FollowRefState.ProximityBits.Z_NEAR)
         dist = self._distance_to_current_target_m()
-        thr = self.accept_radius_m if self.accept_radius_m > 0.0 else self.reach_radius_m
+        thr  = self.accept_radius_m if self.accept_radius_m > 0.0 else self.reach_radius_m
 
         if self.current_ref_idx == 0:
-            # Dive leg: require a minimum hold time and depth convergence.
             if not self._leg_hold_time_elapsed(self.min_dive_leg_time_s):
                 return False
             depth_ok = self.est_depth >= max(0.0, self.depth_m - self.dive_depth_tolerance_m)
             if not (depth_ok or z_near):
-                # Keep fallback timeout to avoid permanent stall on noisy depth.
                 elapsed = 0.0 if self.current_ref_sent_t is None else (time.time() - self.current_ref_sent_t)
                 if elapsed < self.max_dive_leg_time_s:
                     return False
                 logger.warning(
                     "Advancing from DIVE by timeout (elapsed=%.1fs depth=%.2fm target=%.2fm)",
-                    elapsed,
-                    self.est_depth,
-                    self.depth_m,
+                    elapsed, self.est_depth, self.depth_m,
                 )
             if not xy_near and not (allow_without_xy_near and dist is not None and dist <= thr):
                 return False
         else:
-            # Pipe legs: usually XY_NEAR is the primary trigger.
             if not self._leg_hold_time_elapsed(self.min_wp_leg_time_s):
                 return False
             if not xy_near and not (allow_without_xy_near and dist is not None and dist <= thr):
@@ -280,6 +307,10 @@ class FollowRef(DynamicActor):
             self.send_next_reference()
         return True
 
+    # ------------------------------------------------------------------
+    # PopUp
+    # ------------------------------------------------------------------
+
     def start_popup_maneuver(self):
         if self.popup_started:
             return
@@ -287,12 +318,12 @@ class FollowRef(DynamicActor):
             node = self.resolve_node_id(self.target)
 
             man = imcpy.PopUp()
-            man.timeout = self.popup_timeout_s
-            man.duration = self.popup_duration_s
-            man.z = 0.0
-            man.z_units = imcpy.ZUnits.DEPTH
-            man.radius = self.popup_radius_m
-            man.speed = self.speed_mps
+            man.timeout     = self.popup_timeout_s
+            man.duration    = self.popup_duration_s
+            man.z           = 0.0
+            man.z_units     = imcpy.ZUnits.DEPTH
+            man.radius      = self.popup_radius_m
+            man.speed       = self.speed_mps
             man.speed_units = imcpy.SpeedUnits.METERS_PS
 
             flags = imcpy.PopUp.FlagsBits.CURR_POS
@@ -303,28 +334,32 @@ class FollowRef(DynamicActor):
             man.flags = flags
 
             pman = imcpy.PlanManeuver()
-            pman.data = man
+            pman.data        = man
             pman.maneuver_id = "PopUpManeuver"
 
             spec = imcpy.PlanSpecification()
-            spec.plan_id = "PopUpPlan"
+            spec.plan_id      = "PopUpPlan"
             spec.maneuvers.append(pman)
             spec.start_man_id = "PopUpManeuver"
-            spec.description = "End mission pop-up"
+            spec.description  = "End mission pop-up"
 
             pc = imcpy.PlanControl()
-            pc.type = imcpy.PlanControl.TypeEnum.REQUEST
-            pc.op = imcpy.PlanControl.OperationEnum.START
+            pc.type    = imcpy.PlanControl.TypeEnum.REQUEST
+            pc.op      = imcpy.PlanControl.OperationEnum.START
             pc.plan_id = "PopUpPlan"
-            pc.arg = spec
+            pc.arg     = spec
 
             self.send(node, pc)
             self.popup_started = True
-            self.mission_done = True
-            self.last_ref = None
+            self.mission_done  = True
+            self.last_ref      = None
             logger.info("Started PopUp maneuver (duration=%ds)", self.popup_duration_s)
         except KeyError:
             pass
+
+    # ------------------------------------------------------------------
+    # Mission building
+    # ------------------------------------------------------------------
 
     def build_mission_points(self):
         if self.mission_points is not None:
@@ -335,14 +370,13 @@ class FollowRef(DynamicActor):
             return
 
         origin_lat, origin_lon = self.pipe_points[0]
-        center_ne = self._wgs84_to_local_ne(self.pipe_points, origin_lat, origin_lon)
-        offset_ne = self._offset_open_polyline(center_ne)
+        center_ne  = self._wgs84_to_local_ne(self.pipe_points, origin_lat, origin_lon)
+        offset_ne  = self._offset_open_polyline(center_ne)
         self.offset_pipe_points = self._local_ne_to_wgs84(offset_ne, origin_lat, origin_lon)
 
         if not self.offset_pipe_points:
             return
 
-        # Dive point from current vehicle start, along heading to first offset waypoint.
         first_wp_lat, first_wp_lon = self.offset_pipe_points[0]
         dn = (first_wp_lat - self.start_lat) * EARTH_RADIUS_M
         de = (first_wp_lon - self.start_lon) * EARTH_RADIUS_M * math.cos(self.start_lat)
@@ -355,30 +389,39 @@ class FollowRef(DynamicActor):
             base_norm = math.hypot(dn, de)
 
         if base_norm < 1e-6:
-            dive_n = 0.0
-            dive_e = 0.0
+            dive_n = dive_e = 0.0
         else:
-            L = self.compute_dive_offset()
+            L            = self.compute_dive_offset()
             base_heading = math.atan2(de, dn)
             dive_heading = base_heading + math.radians(self.dive_heading_offset_deg)
-            dive_n = math.cos(dive_heading) * L
-            dive_e = math.sin(dive_heading) * L
+            dive_n       = math.cos(dive_heading) * L
+            dive_e       = math.sin(dive_heading) * L
 
-        dive_lat, dive_lon = imcpy.coordinates.WGS84.displace(self.start_lat, self.start_lon, n=dive_n, e=dive_e)
+        dive_lat, dive_lon = imcpy.coordinates.WGS84.displace(
+            self.start_lat, self.start_lon, n=dive_n, e=dive_e
+        )
 
-        mission = [("DIVE", dive_lat, dive_lon, False)]
+        # Tuple layout: (name, lat, lon, depth, final)
+        mission = [("DIVE", dive_lat, dive_lon, self.depth_m, False)]
         for i, (lat, lon) in enumerate(self.offset_pipe_points):
-            final = i == (len(self.offset_pipe_points) - 1)
-            mission.append((f"PIPE{i}", lat, lon, final))
+            final        = i == (len(self.offset_pipe_points) - 1)
+            depth_at_wp  = self._interpolate_depth(i)
+            mission.append((f"PIPE{i}", lat, lon, depth_at_wp, final))
 
         self.mission_points = mission
         logger.info(
-            "Mission built: DIVE + %d offset pipe waypoints (%s %.1fm, depth %.1fm)",
-            len(self.offset_pipe_points),
-            self.pipe_side,
-            self.pipe_offset_m,
-            self.depth_m,
+            "Mission built: DIVE(%.1fm) + %d offset pipe waypoints (%s %.1fm)",
+            self.depth_m, len(self.offset_pipe_points), self.pipe_side, self.pipe_offset_m,
         )
+        for name, lat, lon, depth, final in mission:
+            logger.info(
+                "  %s  lat=%.7f lon=%.7f depth=%.1fm final=%s",
+                name, math.degrees(lat), math.degrees(lon), depth, final,
+            )
+
+    # ------------------------------------------------------------------
+    # Reference sending
+    # ------------------------------------------------------------------
 
     def send_current_reference(self):
         if self.mission_points is None or self.mission_done:
@@ -386,45 +429,45 @@ class FollowRef(DynamicActor):
 
         if self.current_ref_idx >= len(self.mission_points):
             self.mission_done = True
-            self.last_ref = None
+            self.last_ref     = None
             logger.info("Mission finished: all references sent")
             return
 
-        ref_name, lat, lon, final = self.mission_points[self.current_ref_idx]
+        # Unpack 5-tuple including per-waypoint depth
+        ref_name, lat, lon, wp_depth, final = self.mission_points[self.current_ref_idx]
         try:
             node = self.resolve_node_id(self.target)
         except KeyError:
             return
 
-        r = imcpy.Reference()
+        r     = imcpy.Reference()
         r.lat = lat
         r.lon = lon
 
-        dz = imcpy.DesiredZ()
-        dz.value = self.depth_m
+        dz         = imcpy.DesiredZ()
+        dz.value   = wp_depth          # <-- per-waypoint depth (fixed)
         dz.z_units = imcpy.ZUnits.DEPTH
-        r.z = dz
+        r.z        = dz
 
-        ds = imcpy.DesiredSpeed()
-        ds.value = self.speed_mps
-        ds.speed_units = imcpy.SpeedUnits.METERS_PS
-        r.speed = ds
+        ds              = imcpy.DesiredSpeed()
+        ds.value        = self.speed_mps
+        ds.speed_units  = imcpy.SpeedUnits.METERS_PS
+        r.speed         = ds
 
-        # Do not use MANDONE here: in FollowReference it may complete the plan
-        # before the vehicle actually transits the final segment.
-        r.flags = imcpy.Reference.FlagsBits.LOCATION | imcpy.Reference.FlagsBits.SPEED | imcpy.Reference.FlagsBits.Z
+        r.flags = (
+            imcpy.Reference.FlagsBits.LOCATION
+            | imcpy.Reference.FlagsBits.SPEED
+            | imcpy.Reference.FlagsBits.Z
+        )
 
         logger.info(
-            "Sending reference %s idx=%d lat=%.7f lon=%.7f final=%s",
-            ref_name,
-            self.current_ref_idx,
-            lat,
-            lon,
-            str(final),
+            "Sending reference %s idx=%d lat=%.7f lon=%.7f depth=%.1fm final=%s",
+            ref_name, self.current_ref_idx,
+            math.degrees(lat), math.degrees(lon), wp_depth, str(final),
         )
-        self.current_target = (lat, lon)
+        self.current_target    = (lat, lon)
         self.current_ref_sent_t = time.time()
-        self.last_ref = r
+        self.last_ref          = r
         self.sent_refs.append((lat, lon))
         self.send(node, r)
 
@@ -439,63 +482,244 @@ class FollowRef(DynamicActor):
         except KeyError:
             return False
 
+    # ------------------------------------------------------------------
+    # Plot helpers
+    # ------------------------------------------------------------------
+
+    def _mission_point_depths(self) -> List[float]:
+        """Return the depth value for each mission point (DIVE + PIPE waypoints)."""
+        if not self.mission_points:
+            return []
+        return [depth for _, _, _, depth, _ in self.mission_points]
+
+    @staticmethod
+    def _points_to_local_m(
+        lats_rad: List[float],
+        lons_rad: List[float],
+        lat0: float,
+        lon0: float,
+    ) -> Tuple[List[float], List[float]]:
+        """Convert lists of WGS-84 (rad) coordinates to local East/North offsets in metres."""
+        cos_lat0 = math.cos(lat0)
+        east  = [(lon - lon0) * EARTH_RADIUS_M * cos_lat0 for lon in lons_rad]
+        north = [(lat - lat0) * EARTH_RADIUS_M            for lat in lats_rad]
+        return east, north
+
+    # ------------------------------------------------------------------
+    # Plot
+    # ------------------------------------------------------------------
+
     def plot_mission(self):
+        """Render a side-by-side 2-D top-down overview and a 3-D depth plot."""
         if not self.pipe_points:
             logger.info("No pipe points available for plotting")
             return
         try:
             import matplotlib.pyplot as plt
-        except ImportError:
-            logger.warning("matplotlib is not installed, skipping plot")
+            from mpl_toolkits.mplot3d import Axes3D          # noqa: F401 (registers projection)
+            from mpl_toolkits.mplot3d.art3d import Line3DCollection
+            import matplotlib.cm as cm
+            import numpy as np
+        except ImportError as exc:
+            logger.warning("Plotting requires matplotlib + numpy: %s", exc)
             return
 
-        fig, ax = plt.subplots(figsize=(8, 8))
+        # Use the first pipe-point as the local origin so axes are in metres.
+        lat0, lon0 = self.pipe_points[0]
 
-        def to_deg(points):
-            return [(math.degrees(lat), math.degrees(lon)) for lat, lon in points]
+        def to_enu(lats_rad, lons_rad):
+            return self._points_to_local_m(lats_rad, lons_rad, lat0, lon0)
 
-        center_deg = to_deg(self.pipe_points)
-        center_lats = [p[0] for p in center_deg]
-        center_lons = [p[1] for p in center_deg]
-        ax.plot(center_lons, center_lats, "--", color="tab:orange", label="Pipe centerline")
+        # ---- collect series ------------------------------------------------
+        c_lats = [p[0] for p in self.pipe_points]
+        c_lons = [p[1] for p in self.pipe_points]
+        c_depths = [abs(float(d)) for d in self.pipe_point_depths]
+        ce, cn   = to_enu(c_lats, c_lons)
 
+        off_e = off_n = off_depths = []
         if self.offset_pipe_points:
-            offset_deg = to_deg(self.offset_pipe_points)
-            off_lats = [p[0] for p in offset_deg]
-            off_lons = [p[1] for p in offset_deg]
-            ax.plot(
-                off_lons,
-                off_lats,
-                "-",
-                color="tab:blue",
-                label=f"Offset path ({self.pipe_side}, {self.pipe_offset_m:.1f} m)",
-            )
+            o_lats   = [p[0] for p in self.offset_pipe_points]
+            o_lons   = [p[1] for p in self.offset_pipe_points]
+            off_depths = self._mission_point_depths()[1:]   # skip DIVE point
+            # Pad / trim to match offset point count
+            n_off = len(self.offset_pipe_points)
+            if len(off_depths) < n_off:
+                off_depths += [off_depths[-1]] * (n_off - len(off_depths))
+            else:
+                off_depths = off_depths[:n_off]
+            off_e, off_n = to_enu(o_lats, o_lons)
 
-        if self.sent_refs:
-            sent_deg = to_deg(self.sent_refs)
-            s_lats = [p[0] for p in sent_deg]
-            s_lons = [p[1] for p in sent_deg]
-            ax.scatter(s_lons, s_lats, s=16, color="tab:green", alpha=0.7, label="Sent references")
+        sent_e = sent_n = []
+        sent_depths = []
+        if self.sent_refs and self.mission_points:
+            sr_lats = [p[0] for p in self.sent_refs]
+            sr_lons = [p[1] for p in self.sent_refs]
+            sent_e, sent_n = to_enu(sr_lats, sr_lons)
+            mp_depths = self._mission_point_depths()
+            sent_depths = mp_depths[:len(self.sent_refs)]
+            if len(sent_depths) < len(self.sent_refs):
+                sent_depths += [sent_depths[-1]] * (len(self.sent_refs) - len(sent_depths))
 
+        track_e = track_n = []
+        track_depths = []
         if self.est_track:
-            track_deg = to_deg(self.est_track)
-            t_lats = [p[0] for p in track_deg]
-            t_lons = [p[1] for p in track_deg]
-            ax.plot(t_lons, t_lats, "-", color="tab:red", alpha=0.8, label="Vehicle track")
+            tr_lats = [p[0] for p in self.est_track]
+            tr_lons = [p[1] for p in self.est_track]
+            track_e, track_n = to_enu(tr_lats, tr_lons)
+            # est_depth is a scalar; we only have the final value, so we
+            # store a uniform depth for the track.  If you log depth per
+            # point in a future version, replace this list with that data.
+            track_depths = [self.est_depth] * len(self.est_track)
 
-        ax.set_xlabel("Longitude [deg]")
-        ax.set_ylabel("Latitude [deg]")
-        ax.set_title("Dive + Pipe Follow Mission Plot")
-        ax.grid(True, alpha=0.3)
-        ax.axis("equal")
-        ax.legend(loc="best")
+        # ---- figure layout -------------------------------------------------
+        fig = plt.figure(figsize=(18, 8))
+        fig.patch.set_facecolor("#0d1117")
+
+        ax2d = fig.add_subplot(1, 2, 1)
+        ax3d = fig.add_subplot(1, 2, 2, projection="3d")
+
+        for ax in (ax2d,):
+            ax.set_facecolor("#161b22")
+            for spine in ax.spines.values():
+                spine.set_edgecolor("#30363d")
+            ax.tick_params(colors="#8b949e")
+            ax.xaxis.label.set_color("#8b949e")
+            ax.yaxis.label.set_color("#8b949e")
+            ax.title.set_color("#e6edf3")
+
+        ax3d.set_facecolor("#161b22")
+        ax3d.tick_params(colors="#8b949e")
+        ax3d.xaxis.label.set_color("#8b949e")
+        ax3d.yaxis.label.set_color("#8b949e")
+        ax3d.zaxis.label.set_color("#8b949e")
+        ax3d.title.set_color("#e6edf3")
+
+        # colour map for depth (deeper = darker blue)
+        depth_cmap = cm.get_cmap("cool")
+
+        all_depths = c_depths + (list(off_depths) if off_depths else [])
+        d_min = min(all_depths) if all_depths else 0.0
+        d_max = max(all_depths) if all_depths else 1.0
+        if d_max == d_min:
+            d_max = d_min + 1.0
+
+        def dnorm(d):
+            return (d - d_min) / (d_max - d_min)
+
+        # ===== 2-D top-down =================================================
+        # Pipe centerline
+        ax2d.plot(ce, cn, "--", color="#e6a817", lw=1.5, label="Pipe centreline", zorder=2)
+        # Centreline waypoints coloured by depth
+        sc = ax2d.scatter(ce, cn, c=c_depths, cmap="cool", vmin=d_min, vmax=d_max,
+                          s=50, zorder=4, edgecolors="#0d1117", linewidths=0.5)
+
+        if off_e:
+            ax2d.plot(off_e, off_n, "-", color="#58a6ff", lw=2,
+                      label=f"Offset path ({self.pipe_side}, {self.pipe_offset_m:.0f} m)", zorder=3)
+            ax2d.scatter(off_e, off_n, c=off_depths, cmap="cool", vmin=d_min, vmax=d_max,
+                         s=40, zorder=5, edgecolors="#0d1117", linewidths=0.5)
+
+        if sent_e:
+            ax2d.scatter(sent_e, sent_n, s=12, color="#3fb950", alpha=0.8,
+                         label="Sent references", zorder=6)
+
+        if track_e:
+            ax2d.plot(track_e, track_n, "-", color="#f85149", lw=1.2,
+                      alpha=0.85, label="Vehicle track", zorder=3)
+
+        cbar = fig.colorbar(sc, ax=ax2d, pad=0.02, fraction=0.046)
+        cbar.set_label("Depth [m]", color="#8b949e")
+        cbar.ax.yaxis.set_tick_params(color="#8b949e")
+        plt.setp(cbar.ax.yaxis.get_ticklabels(), color="#8b949e")
+
+        ax2d.set_xlabel("East [m]")
+        ax2d.set_ylabel("North [m]")
+        ax2d.set_title("Top-down overview", fontsize=12, fontweight="bold")
+        ax2d.set_aspect("equal")
+        ax2d.grid(True, color="#21262d", linewidth=0.6)
+        ax2d.legend(loc="best", facecolor="#161b22", edgecolor="#30363d",
+                    labelcolor="#e6edf3", fontsize=8)
+
+        # ===== 3-D ==========================================================
+        # Helper: draw a coloured line in 3-D by breaking it into segments
+        def plot3d_colored(xs, ys, zs_depth, lw=2, alpha=1.0):
+            """Draw a polyline in 3-D with each segment coloured by depth."""
+            if len(xs) < 2:
+                return
+            pts = np.array([xs, ys, [-d for d in zs_depth]]).T  # depth → negative Z
+            segs = [pts[i:i+2] for i in range(len(pts) - 1)]
+            seg_depths = [(zs_depth[i] + zs_depth[i+1]) / 2 for i in range(len(zs_depth) - 1)]
+            colors = [depth_cmap(dnorm(d)) for d in seg_depths]
+            col = Line3DCollection(segs, colors=colors, linewidths=lw, alpha=alpha)
+            ax3d.add_collection3d(col)
+
+        # Pipe centreline
+        plot3d_colored(ce, cn, c_depths, lw=1.5, alpha=0.6)
+        ax3d.scatter(ce, cn, [-d for d in c_depths],
+                     c=c_depths, cmap="cool", vmin=d_min, vmax=d_max,
+                     s=40, depthshade=True, edgecolors="none", label="Pipe centreline")
+
+        # Offset path
+        if off_e:
+            plot3d_colored(list(off_e), list(off_n), list(off_depths), lw=2.5)
+            ax3d.scatter(off_e, off_n, [-d for d in off_depths],
+                         c=off_depths, cmap="cool", vmin=d_min, vmax=d_max,
+                         s=50, depthshade=True, edgecolors="none",
+                         label=f"Offset path ({self.pipe_side})")
+
+        # Vehicle track
+        if track_e:
+            ax3d.plot(track_e, track_n, [-d for d in track_depths],
+                      "-", color="#f85149", lw=1.5, alpha=0.85, label="Vehicle track")
+
+        # Sent references
+        if sent_e:
+            ax3d.scatter(sent_e, sent_n, [-d for d in sent_depths],
+                         s=18, color="#3fb950", alpha=0.85,
+                         depthshade=False, label="Sent references")
+
+        # Vertical "dive" line from surface to first offset waypoint
+        if off_e:
+            ax3d.plot([off_e[0], off_e[0]], [off_n[0], off_n[0]],
+                      [0, -off_depths[0]],
+                      "--", color="#8b949e", lw=1, alpha=0.5)
+
+        ax3d.set_xlabel("East [m]",  labelpad=6)
+        ax3d.set_ylabel("North [m]", labelpad=6)
+        ax3d.set_zlabel("Depth [m]", labelpad=6)
+        ax3d.set_title("3-D mission profile", fontsize=12, fontweight="bold")
+
+        # Flip Z axis so depth increases downward visually
+        z_lo = -(d_max * 1.05)
+        z_hi = max(0.0, -(d_min * 0.95)) + 5
+        ax3d.set_zlim(z_lo, z_hi)
+        # Relabel Z ticks as positive depths
+        z_ticks = np.linspace(z_lo, 0, 6)
+        ax3d.set_zticks(z_ticks)
+        ax3d.set_zticklabels([f"{abs(z):.0f}" for z in z_ticks])
+
+        ax3d.legend(loc="upper left", facecolor="#161b22", edgecolor="#30363d",
+                    labelcolor="#e6edf3", fontsize=8)
+        ax3d.grid(True, color="#21262d", linewidth=0.4)
+        ax3d.view_init(elev=25, azim=-60)
+
+        fig.suptitle(
+            f"Dive + Pipe Follow Mission  |  depth {d_min:.0f}–{d_max:.0f} m  |  "
+            f"{self.pipe_side} offset {self.pipe_offset_m:.0f} m",
+            color="#e6edf3", fontsize=13, fontweight="bold", y=1.01,
+        )
         fig.tight_layout()
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_file = f"dive_follow_pipe_plot_{ts}.png"
-        fig.savefig(out_file, dpi=150)
+        fig.savefig(out_file, dpi=150, bbox_inches="tight",
+                    facecolor=fig.get_facecolor())
         logger.info("Saved mission plot to %s", out_file)
         plt.show()
+
+    # ------------------------------------------------------------------
+    # IMC periodic / subscribers
+    # ------------------------------------------------------------------
 
     @Periodic(10)
     def init_followref(self):
@@ -504,28 +728,28 @@ class FollowRef(DynamicActor):
         try:
             node = self.resolve_node_id(self.target)
 
-            fr = imcpy.FollowReference()
-            fr.control_src = 0xFFFF
-            fr.control_ent = 0xFF
-            fr.timeout = 10.0
-            fr.loiter_radius = 0
+            fr                  = imcpy.FollowReference()
+            fr.control_src      = 0xFFFF
+            fr.control_ent      = 0xFF
+            fr.timeout          = 10.0
+            fr.loiter_radius    = 0
             fr.altitude_interval = 0
 
-            pman = imcpy.PlanManeuver()
-            pman.data = fr
+            pman             = imcpy.PlanManeuver()
+            pman.data        = fr
             pman.maneuver_id = "FollowReferenceManeuver"
 
-            spec = imcpy.PlanSpecification()
-            spec.plan_id = "FollowReference"
+            spec              = imcpy.PlanSpecification()
+            spec.plan_id      = "FollowReference"
             spec.maneuvers.append(pman)
             spec.start_man_id = "FollowReferenceManeuver"
-            spec.description = "Dive first, then single-pass offset pipe tracking"
+            spec.description  = "Dive first, then single-pass offset pipe tracking"
 
-            pc = imcpy.PlanControl()
-            pc.type = imcpy.PlanControl.TypeEnum.REQUEST
-            pc.op = imcpy.PlanControl.OperationEnum.START
+            pc         = imcpy.PlanControl()
+            pc.type    = imcpy.PlanControl.TypeEnum.REQUEST
+            pc.op      = imcpy.PlanControl.OperationEnum.START
             pc.plan_id = "FollowReference"
-            pc.arg = spec
+            pc.arg     = spec
 
             self.send(node, pc)
             logger.info("Started FollowRef command")
@@ -553,11 +777,9 @@ class FollowRef(DynamicActor):
         self.state = msg.state
         if self.mission_points is None:
             return
-
         if self.mission_done or self.popup_started:
             return
 
-        # Ensure at least one reference is sent once mission is built
         if self.last_ref is None and not self.mission_done:
             self.current_ref_idx = 0
             self.send_current_reference()
@@ -570,15 +792,12 @@ class FollowRef(DynamicActor):
             imcpy.FollowRefState.StateEnum.HOVER,
             imcpy.FollowRefState.StateEnum.WAIT,
         ):
-            # Same pattern as working examples: allow progress while in
-            # loiter-like states if we're near enough to the current target.
             self._try_advance_mission(msg, allow_without_xy_near=True)
         elif msg.state == imcpy.FollowRefState.StateEnum.TIMEOUT:
             logger.info("FollowRef timeout")
 
     @Periodic(1.0)
     def periodic_ref(self):
-        # Fix: send to resolved node, not string name
         if self.last_ref and not self.mission_done and not self.popup_started:
             try:
                 node = self.resolve_node_id(self.target)
@@ -586,8 +805,10 @@ class FollowRef(DynamicActor):
             except KeyError:
                 pass
 
-            # Keep-alive only; mission progression is handled by FollowRefState.
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -595,55 +816,39 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Dive to depth then follow pipe in parallel offset path (global pipe coordinates)."
     )
-    parser.add_argument("--target", default="lauv-simulator-1", help="Target IMC system name")
-    parser.add_argument(
-        "--pipe-point",
-        action="append",
-        required=True,
-        help='Pipe point "lat,lon[,depth]". Repeat in order along the pipe.',
-    )
-    parser.add_argument(
-        "--input-radians",
-        action="store_true",
-        help="Interpret --pipe-point lat/lon as radians (default is degrees).",
-    )
-    parser.add_argument(
-        "--pipe-depth",
-        type=float,
-        default=None,
-        help="Pipe depth in meters. Overrides per-point depth if provided.",
-    )
-    parser.add_argument("--side", choices=("left", "right"), default="right", help="Offset side of the pipe path")
-    parser.add_argument("--offset", type=float, default=8.0, help="Lateral offset from pipe in meters")
-    parser.add_argument(
-        "--accept-radius",
-        type=float,
-        default=0.0,
-        help="Meters required before advancing (0 => use fallback reach radius).",
-    )
-    parser.add_argument("--max-pitch-deg", type=float, default=10.0, help="Max pitch used to compute dive offset")
-    parser.add_argument("--dive-heading-offset-deg", type=float, default=0.0, help="Extra heading offset for dive leg")
-    parser.add_argument("--speed", type=float, default=1.6, help="Reference speed in m/s")
-    parser.add_argument("--popup-duration", type=int, default=30, help="Pop-up duration at surface in seconds")
-    parser.add_argument("--popup-timeout", type=int, default=120, help="Pop-up maneuver timeout in seconds")
-    parser.add_argument("--popup-radius", type=float, default=10.0, help="Pop-up station radius in meters")
-    parser.add_argument(
-        "--no-popup-wait-surface",
-        action="store_true",
-        help="Disable WAIT_AT_SURFACE flag on pop-up maneuver",
-    )
-    parser.add_argument(
-        "--popup-station-keep",
-        action="store_true",
-        help="Enable STATION_KEEP flag on pop-up maneuver",
-    )
-    parser.add_argument("--plot-on-exit", action="store_true", help="Plot paths and track when mission exits")
+    parser.add_argument("--target", default=DEFAULT_TARGET)
+    parser.add_argument("--pipe-point", action="append", default=None,
+                        help='Override pipe points: "lat,lon,depth". Repeat in order.')
+    parser.add_argument("--input-radians", action="store_true")
+    parser.add_argument("--pipe-depth", type=float, default=None)
+    parser.add_argument("--side", choices=("left", "right"), default=DEFAULT_SIDE)
+    parser.add_argument("--offset", type=float, default=DEFAULT_OFFSET_M)
+    parser.add_argument("--accept-radius", type=float, default=DEFAULT_ACCEPT_RADIUS)
+    parser.add_argument("--max-pitch-deg", type=float, default=DEFAULT_MAX_PITCH_DEG)
+    parser.add_argument("--dive-heading-offset-deg", type=float, default=0.0)
+    parser.add_argument("--speed", type=float, default=DEFAULT_SPEED_MPS)
+    parser.add_argument("--popup-duration", type=int, default=DEFAULT_POPUP_DURATION)
+    parser.add_argument("--popup-timeout", type=int, default=DEFAULT_POPUP_TIMEOUT)
+    parser.add_argument("--popup-radius", type=float, default=DEFAULT_POPUP_RADIUS)
+    parser.add_argument("--no-popup-wait-surface", action="store_true")
+    parser.add_argument("--popup-station-keep", action="store_true")
+    parser.add_argument("--plot-on-exit", action="store_true", default=DEFAULT_PLOT_ON_EXIT)
     args = parser.parse_args()
 
-    parsed = [parse_pipe_point(p, input_in_radians=args.input_radians) for p in args.pipe_point]
-    if len(parsed) < 2:
-        raise ValueError("Provide at least two --pipe-point entries.")
+    # Use CLI pipe-points if provided, otherwise fall back to hardcoded defaults
+    if args.pipe_point:
+        parsed = [parse_pipe_point(p, input_in_radians=args.input_radians) for p in args.pipe_point]
+    else:
+        # Convert default degrees to radians to match internal representation
+        parsed = [
+            (math.radians(lat), math.radians(lon), depth)
+            for lat, lon, depth in DEFAULT_PIPE_POINTS
+        ]
 
+    if len(parsed) < 2:
+        raise ValueError("Provide at least two pipe points.")
+
+    # Determine fallback depth (used for the DIVE leg)
     point_depths = [d for _, _, d in parsed if d is not None]
     if args.pipe_depth is not None:
         depth_m = args.pipe_depth
@@ -652,23 +857,25 @@ if __name__ == "__main__":
     else:
         depth_m = 10.0
 
-    pipe_points = [(lat, lon) for lat, lon, _ in parsed]
+    pipe_points       = [(lat, lon) for lat, lon, _ in parsed]
+    pipe_point_depths = [d if d is not None else depth_m for _, _, d in parsed]
 
     actor = FollowRef(
-        target=args.target,
-        pipe_points=pipe_points,
-        depth_m=depth_m,
-        pipe_side=args.side,
-        pipe_offset_m=args.offset,
-        accept_radius_m=args.accept_radius,
-        max_pitch_deg=args.max_pitch_deg,
-        dive_heading_offset_deg=args.dive_heading_offset_deg,
-        speed_mps=args.speed,
-        popup_duration_s=args.popup_duration,
-        popup_timeout_s=args.popup_timeout,
-        popup_radius_m=args.popup_radius,
-        popup_wait_surface=not args.no_popup_wait_surface,
-        popup_station_keep=args.popup_station_keep,
+        target              = args.target,
+        pipe_points         = pipe_points,
+        pipe_point_depths   = pipe_point_depths,
+        depth_m             = depth_m,
+        pipe_side           = args.side,
+        pipe_offset_m       = args.offset,
+        accept_radius_m     = args.accept_radius,
+        max_pitch_deg       = args.max_pitch_deg,
+        dive_heading_offset_deg = args.dive_heading_offset_deg,
+        speed_mps           = args.speed,
+        popup_duration_s    = args.popup_duration,
+        popup_timeout_s     = args.popup_timeout,
+        popup_radius_m      = args.popup_radius,
+        popup_wait_surface  = not args.no_popup_wait_surface,
+        popup_station_keep  = args.popup_station_keep,
     )
     try:
         actor.run()
