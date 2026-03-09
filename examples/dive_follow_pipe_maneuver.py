@@ -2,12 +2,15 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import csv
+import json
 import logging
 import math
+import os
 import sys
 import time
-from datetime import datetime
-from typing import List, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 import imcpy
 import imcpy.coordinates
@@ -63,6 +66,258 @@ def parse_pipe_point(raw: str, input_in_radians: bool) -> Tuple[float, float, Op
         lon = math.radians(lon)
 
     return lat, lon, depth
+
+
+class MissionLogger:
+    """
+    Writes mission telemetry to two files on close:
+      - <stem>_track.csv       : one row per EstimatedState sample
+      - <stem>_events.csv      : one row per discrete mission event
+      - <stem>.geojson         : GeoJSON FeatureCollection with all layers
+
+    Call  logger.log_track(...)   from recv_estate
+          logger.log_event(...)   from any state-change / reference send
+          logger.save(actor)      once the mission exits (in the finally block)
+    """
+
+    # CSV column definitions
+    TRACK_COLS = [
+        "timestamp_utc", "elapsed_s",
+        "lat_deg", "lon_deg", "depth_m",
+        "ref_idx", "followref_state",
+    ]
+    EVENT_COLS = [
+        "timestamp_utc", "elapsed_s",
+        "event_type", "ref_idx", "ref_name",
+        "lat_deg", "lon_deg", "depth_m",
+        "followref_state", "detail",
+    ]
+
+    def __init__(self, stem: Optional[str] = None):
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        self.stem = stem or f"mission_{ts}"
+        self.t0   = time.time()
+
+        self._track_rows: List[Dict[str, Any]] = []
+        self._event_rows: List[Dict[str, Any]] = []
+
+    # ------------------------------------------------------------------
+    # Public logging methods
+    # ------------------------------------------------------------------
+
+    def log_track(
+        self,
+        lat_deg: float,
+        lon_deg: float,
+        depth_m: float,
+        ref_idx: int,
+        followref_state: str,
+    ) -> None:
+        self._track_rows.append({
+            "timestamp_utc":   datetime.now(timezone.utc).isoformat(),
+            "elapsed_s":       round(time.time() - self.t0, 2),
+            "lat_deg":         round(lat_deg, 8),
+            "lon_deg":         round(lon_deg, 8),
+            "depth_m":         round(depth_m, 3),
+            "ref_idx":         ref_idx,
+            "followref_state": followref_state,
+        })
+
+    def log_event(
+        self,
+        event_type: str,
+        ref_idx: int     = -1,
+        ref_name: str    = "",
+        lat_deg: float   = float("nan"),
+        lon_deg: float   = float("nan"),
+        depth_m: float   = float("nan"),
+        followref_state: str = "",
+        detail: str      = "",
+    ) -> None:
+        self._event_rows.append({
+            "timestamp_utc":   datetime.now(timezone.utc).isoformat(),
+            "elapsed_s":       round(time.time() - self.t0, 2),
+            "event_type":      event_type,
+            "ref_idx":         ref_idx,
+            "ref_name":        ref_name,
+            "lat_deg":         round(lat_deg, 8) if not math.isnan(lat_deg) else "",
+            "lon_deg":         round(lon_deg, 8) if not math.isnan(lon_deg) else "",
+            "depth_m":         round(depth_m, 3) if not math.isnan(depth_m) else "",
+            "followref_state": followref_state,
+            "detail":          detail,
+        })
+
+    # ------------------------------------------------------------------
+    # Save
+    # ------------------------------------------------------------------
+
+    def save(self, actor: "FollowRef") -> None:
+        """Write CSV and GeoJSON files. Call once on mission exit."""
+        self._write_track_csv()
+        self._write_events_csv()
+        self._write_geojson(actor)
+        logger.info(
+            "Logs saved: %s_track.csv, %s_events.csv, %s.geojson",
+            self.stem, self.stem, self.stem,
+        )
+
+    def _write_track_csv(self) -> None:
+        path = f"{self.stem}_track.csv"
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=self.TRACK_COLS)
+            w.writeheader()
+            w.writerows(self._track_rows)
+        logger.info("Track CSV  → %s  (%d rows)", path, len(self._track_rows))
+
+    def _write_events_csv(self) -> None:
+        path = f"{self.stem}_events.csv"
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=self.EVENT_COLS)
+            w.writeheader()
+            w.writerows(self._event_rows)
+        logger.info("Events CSV → %s  (%d rows)", path, len(self._event_rows))
+
+    def _write_geojson(self, actor: "FollowRef") -> None:
+        features = []
+
+        # 1. Vehicle track (LineString with per-point depth in properties)
+        if actor.est_track:
+            coords   = [[math.degrees(lon), math.degrees(lat), -depth]
+                        for lat, lon, depth in actor.est_track]
+            depths   = [depth for _, _, depth in actor.est_track]
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "properties": {
+                    "layer":    "vehicle_track",
+                    "n_points": len(coords),
+                    "depth_min_m": round(min(depths), 2),
+                    "depth_max_m": round(max(depths), 2),
+                },
+            })
+            # Individual track points (for depth-coloured symbology in QGIS etc.)
+            for lat, lon, depth in actor.est_track:
+                features.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [math.degrees(lon), math.degrees(lat), -depth],
+                    },
+                    "properties": {"layer": "vehicle_track_pt", "depth_m": round(depth, 3)},
+                })
+
+        # 2. Pipe centreline
+        if actor.pipe_points and actor.pipe_point_depths:
+            coords = [
+                [math.degrees(lon), math.degrees(lat), -depth]
+                for (lat, lon), depth in zip(actor.pipe_points, actor.pipe_point_depths)
+            ]
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "properties": {"layer": "pipe_centreline"},
+            })
+            for (lat, lon), depth in zip(actor.pipe_points, actor.pipe_point_depths):
+                features.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [math.degrees(lon), math.degrees(lat), -depth],
+                    },
+                    "properties": {"layer": "pipe_centreline_pt", "depth_m": round(depth, 3)},
+                })
+
+        # 3. Offset path
+        if actor.offset_pipe_points and actor.mission_points:
+            off_depths = [d for _, _, _, d, _ in actor.mission_points[1:]]
+            n_off = len(actor.offset_pipe_points)
+            if len(off_depths) < n_off:
+                off_depths += [off_depths[-1]] * (n_off - len(off_depths))
+            coords = [
+                [math.degrees(lon), math.degrees(lat), -depth]
+                for (lat, lon), depth in zip(actor.offset_pipe_points, off_depths)
+            ]
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "properties": {
+                    "layer":     "offset_path",
+                    "side":      actor.pipe_side,
+                    "offset_m":  actor.pipe_offset_m,
+                },
+            })
+
+        # 4. Sent reference waypoints
+        if actor.sent_refs and actor.mission_points:
+            mp_depths = [d for _, _, _, d, _ in actor.mission_points]
+            for i, (lat, lon) in enumerate(actor.sent_refs):
+                depth = mp_depths[i] if i < len(mp_depths) else mp_depths[-1]
+                name  = actor.mission_points[i][0] if i < len(actor.mission_points) else f"REF{i}"
+                features.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [math.degrees(lon), math.degrees(lat), -depth],
+                    },
+                    "properties": {
+                        "layer":   "sent_reference",
+                        "ref_idx": i,
+                        "name":    name,
+                        "depth_m": round(depth, 3),
+                    },
+                })
+
+        # 5. Mission events (from event log) that carry coordinates
+        for row in self._event_rows:
+            if row["lat_deg"] == "" or row["lon_deg"] == "":
+                continue
+            depth_val = row["depth_m"] if row["depth_m"] != "" else 0.0
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [float(row["lon_deg"]), float(row["lat_deg"]), -float(depth_val)],
+                },
+                "properties": {
+                    "layer":           "mission_event",
+                    "event_type":      row["event_type"],
+                    "ref_idx":         row["ref_idx"],
+                    "ref_name":        row["ref_name"],
+                    "depth_m":         depth_val,
+                    "elapsed_s":       row["elapsed_s"],
+                    "timestamp_utc":   row["timestamp_utc"],
+                    "followref_state": row["followref_state"],
+                    "detail":          row["detail"],
+                },
+            })
+
+        # Mission metadata in a non-geometric feature
+        features.append({
+            "type": "Feature",
+            "geometry": None,
+            "properties": {
+                "layer":          "mission_metadata",
+                "target":         actor.target,
+                "pipe_side":      actor.pipe_side,
+                "pipe_offset_m":  actor.pipe_offset_m,
+                "depth_m":        actor.depth_m,
+                "speed_mps":      actor.speed_mps,
+                "mission_done":   actor.mission_done,
+                "n_waypoints":    len(actor.mission_points) if actor.mission_points else 0,
+                "n_track_pts":    len(actor.est_track),
+                "n_sent_refs":    len(actor.sent_refs),
+                "saved_utc":      datetime.now(timezone.utc).isoformat(),
+            },
+        })
+
+        geojson = {
+            "type": "FeatureCollection",
+            "features": features,
+        }
+        path = f"{self.stem}.geojson"
+        with open(path, "w") as f:
+            json.dump(geojson, f, indent=2)
+        logger.info("GeoJSON    → %s  (%d features)", path, len(features))
 
 
 class FollowRef(DynamicActor):
@@ -128,8 +383,12 @@ class FollowRef(DynamicActor):
         self.min_wp_leg_time_s = 0.0
 
         self.sent_refs: List[Tuple[float, float]] = []
-        self.est_track: List[Tuple[float, float]] = []
+        self.est_track: List[Tuple[float, float, float]] = []   # (lat, lon, depth)
         self.offset_pipe_points: List[Tuple[float, float]] = []
+
+        # Mission data logger (CSV + GeoJSON)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        self.mlog = MissionLogger(stem=f"mission_{target}_{ts}")
 
     # ------------------------------------------------------------------
     # Helpers
@@ -354,6 +613,11 @@ class FollowRef(DynamicActor):
             self.mission_done  = True
             self.last_ref      = None
             logger.info("Started PopUp maneuver (duration=%ds)", self.popup_duration_s)
+            self.mlog.log_event(
+                event_type      = "popup_started",
+                followref_state = str(self.state) if self.state is not None else "",
+                detail          = f"duration={self.popup_duration_s}s timeout={self.popup_timeout_s}s",
+            )
         except KeyError:
             pass
 
@@ -418,6 +682,13 @@ class FollowRef(DynamicActor):
                 "  %s  lat=%.7f lon=%.7f depth=%.1fm final=%s",
                 name, math.degrees(lat), math.degrees(lon), depth, final,
             )
+        self.mlog.log_event(
+            event_type = "mission_built",
+            detail     = (
+                f"n_waypoints={len(mission)} dive_depth={self.depth_m:.1f}m "
+                f"side={self.pipe_side} offset={self.pipe_offset_m:.1f}m"
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Reference sending
@@ -470,6 +741,16 @@ class FollowRef(DynamicActor):
         self.last_ref          = r
         self.sent_refs.append((lat, lon))
         self.send(node, r)
+        self.mlog.log_event(
+            event_type      = "reference_sent",
+            ref_idx         = self.current_ref_idx,
+            ref_name        = ref_name,
+            lat_deg         = math.degrees(lat),
+            lon_deg         = math.degrees(lon),
+            depth_m         = wp_depth,
+            followref_state = str(self.state) if self.state is not None else "",
+            detail          = f"final={final}",
+        )
 
     def send_next_reference(self):
         self.current_ref_idx += 1
@@ -563,13 +844,10 @@ class FollowRef(DynamicActor):
         track_e = track_n = []
         track_depths = []
         if self.est_track:
-            tr_lats = [p[0] for p in self.est_track]
-            tr_lons = [p[1] for p in self.est_track]
+            tr_lats  = [p[0] for p in self.est_track]
+            tr_lons  = [p[1] for p in self.est_track]
+            track_depths = [p[2] for p in self.est_track]   # real per-point depths
             track_e, track_n = to_enu(tr_lats, tr_lons)
-            # est_depth is a scalar; we only have the final value, so we
-            # store a uniform depth for the track.  If you log depth per
-            # point in a future version, replace this list with that data.
-            track_depths = [self.est_depth] * len(self.est_track)
 
         # ---- figure layout -------------------------------------------------
         fig = plt.figure(figsize=(18, 8))
@@ -762,11 +1040,24 @@ class FollowRef(DynamicActor):
             return
         self.lat, self.lon, _ = imcpy.coordinates.toWGS84(msg)
         self.est_depth = float(msg.depth)
-        self.est_track.append((self.lat, self.lon))
+        self.est_track.append((self.lat, self.lon, self.est_depth))   # store depth per point
+        self.mlog.log_track(
+            lat_deg         = math.degrees(self.lat),
+            lon_deg         = math.degrees(self.lon),
+            depth_m         = self.est_depth,
+            ref_idx         = self.current_ref_idx,
+            followref_state = str(self.state) if self.state is not None else "UNKNOWN",
+        )
         if self.start_lat is None:
             self.start_lat = self.lat
             self.start_lon = self.lon
             logger.info("Locked start position")
+            self.mlog.log_event(
+                event_type = "start_position_locked",
+                lat_deg    = math.degrees(self.lat),
+                lon_deg    = math.degrees(self.lon),
+                depth_m    = self.est_depth,
+            )
         self.build_mission_points()
 
     @Subscribe(imcpy.FollowRefState)
@@ -774,7 +1065,22 @@ class FollowRef(DynamicActor):
         if not self.is_from_target(msg):
             return
 
+        prev_state = self.state
         self.state = msg.state
+
+        # Log every state transition
+        state_str = str(msg.state)
+        if msg.state != prev_state:
+            self.mlog.log_event(
+                event_type      = "followref_state_change",
+                ref_idx         = self.current_ref_idx,
+                lat_deg         = math.degrees(self.lat),
+                lon_deg         = math.degrees(self.lon),
+                depth_m         = self.est_depth,
+                followref_state = state_str,
+                detail          = f"prev={prev_state} -> now={msg.state} proximity={msg.proximity}",
+            )
+
         if self.mission_points is None:
             return
         if self.mission_done or self.popup_started:
@@ -795,6 +1101,14 @@ class FollowRef(DynamicActor):
             self._try_advance_mission(msg, allow_without_xy_near=True)
         elif msg.state == imcpy.FollowRefState.StateEnum.TIMEOUT:
             logger.info("FollowRef timeout")
+            self.mlog.log_event(
+                event_type      = "followref_timeout",
+                ref_idx         = self.current_ref_idx,
+                lat_deg         = math.degrees(self.lat),
+                lon_deg         = math.degrees(self.lon),
+                depth_m         = self.est_depth,
+                followref_state = state_str,
+            )
 
     @Periodic(1.0)
     def periodic_ref(self):
@@ -880,5 +1194,6 @@ if __name__ == "__main__":
     try:
         actor.run()
     finally:
+        actor.mlog.save(actor)
         if args.plot_on_exit:
             actor.plot_mission()
