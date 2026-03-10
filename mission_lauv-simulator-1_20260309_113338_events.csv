@@ -1,9 +1,0 @@
-timestamp_utc,elapsed_s,event_type,ref_idx,ref_name,lat_deg,lon_deg,depth_m,followref_state,detail
-2026-03-09T11:33:50.350310+00:00,12.01,start_position_locked,-1,,63.44072739,10.35258101,0.0,,
-2026-03-09T11:33:50.350677+00:00,12.01,mission_built,-1,,,,,,n_waypoints=14 dive_depth=25.0m (pipe=30.0m - alt=5.0m) side=right offset=20.0m
-2026-03-09T11:34:00.351490+00:00,22.01,followref_state_change,0,,63.44072781,10.35258102,0.063,StateEnum.WAIT,prev=None -> now=StateEnum.WAIT proximity=1
-2026-03-09T11:34:00.353463+00:00,22.01,reference_sent,0,DIVE,63.44036496,10.3498579,25.0,StateEnum.WAIT,final=False z_mode=depth depth=25.0m
-2026-03-09T11:34:00.353650+00:00,22.01,followref_state_change,0,,63.44072781,10.35258102,0.063,StateEnum.GOTO,prev=StateEnum.WAIT -> now=StateEnum.GOTO proximity=1
-2026-03-09T11:35:22.470378+00:00,104.13,sidescan_on,1,,63.44040352,10.35014291,25.07,,active=True
-2026-03-09T11:35:22.473739+00:00,104.13,reference_sent,1,PIPE0,63.44039563,10.35008479,30.0,StateEnum.GOTO,final=False z_mode=altitude alt=5.0m
-2026-03-09T11:35:22.474930+00:00,104.13,followref_state_change,1,,63.44040352,10.35014291,25.07,StateEnum.ELEVATOR,prev=StateEnum.GOTO -> now=StateEnum.ELEVATOR proximity=2

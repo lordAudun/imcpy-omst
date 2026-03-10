@@ -74,6 +74,21 @@ def parse_pipe_point(raw: str, input_in_radians: bool) -> Tuple[float, float, Op
     return lat, lon, depth
 
 
+def load_csv_pipe_points(csv_path: str) -> List[Tuple[float, float, float]]:
+    """Load pipe centreline from a CSV with columns: idx,lat,lon,depth_m (degrees)."""
+    points = []
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            lat   = math.radians(float(row["lat"]))
+            lon   = math.radians(float(row["lon"]))
+            depth = abs(float(row["depth_m"]))
+            points.append((lat, lon, depth))
+    if len(points) < 2:
+        raise ValueError(f"CSV '{csv_path}' must contain at least 2 points.")
+    return points
+
+
 class MissionLogger:
     """
     Writes mission telemetry to two files on close:
@@ -395,8 +410,8 @@ class FollowRef(DynamicActor):
         self.popup_started = False
         self.current_ref_sent_t = None
 
-        self.min_dive_leg_time_s = 8.0
-        self.max_dive_leg_time_s = 25.0
+        self.min_dive_leg_time_s = 0.0
+        self.max_dive_leg_time_s = 60.0
         self.dive_depth_tolerance_m = 0.7
         self.min_wp_leg_time_s = 0.0
 
@@ -465,6 +480,26 @@ class FollowRef(DynamicActor):
             return self.depth_m
         idx = min(wp_index, len(depths) - 1)
         return abs(float(depths[idx]))
+
+    def _compute_segment_depth(self) -> Optional[float]:
+        """
+        Linearly interpolate the planned pipe depth at the vehicle's current position
+        along the segment from mission_points[current_ref_idx-1] to mission_points[current_ref_idx].
+        Returns None if not on a pipe leg or mission not built yet.
+        """
+        if self.mission_points is None or self.current_ref_idx <= 0:
+            return None
+        idx = self.current_ref_idx
+        if idx >= len(self.mission_points):
+            return None
+        _, prev_lat, prev_lon, prev_depth, _ = self.mission_points[idx - 1]
+        _, curr_lat, curr_lon, curr_depth, _ = self.mission_points[idx]
+        seg_len = imcpy.coordinates.WGS84.distance(prev_lat, prev_lon, 0.0, curr_lat, curr_lon, 0.0)
+        if seg_len < 1.0:
+            return curr_depth
+        dist_to_dest = imcpy.coordinates.WGS84.distance(self.lat, self.lon, 0.0, curr_lat, curr_lon, 0.0)
+        t = max(0.0, min(1.0, 1.0 - dist_to_dest / seg_len))
+        return prev_depth + t * (curr_depth - prev_depth)
 
     def compute_dive_offset(self) -> float:
         """Horizontal run-in distance needed to reach dive_depth at max_pitch_deg."""
@@ -614,8 +649,12 @@ class FollowRef(DynamicActor):
         else:
             if not self._leg_hold_time_elapsed(self.min_wp_leg_time_s):
                 return False
-            if not xy_near and not (allow_without_xy_near and dist is not None and dist <= thr):
-                return False
+            if not allow_without_xy_near:
+                # GOTO state: require XY proximity before advancing.
+                if not xy_near and not (dist is not None and dist <= thr):
+                    return False
+            # LOITER/HOVER/WAIT (allow_without_xy_near=True): the vehicle is AT the waypoint
+            # by definition of being in these states, so advance unconditionally.
 
         if self.current_ref_idx >= len(self.mission_points) - 1:
             logger.info("Final waypoint reached, starting PopUp")
@@ -1191,12 +1230,23 @@ class FollowRef(DynamicActor):
 
     @Periodic(1.0)
     def periodic_ref(self):
-        if self.last_ref and not self.mission_done and not self.popup_started:
-            try:
-                node = self.resolve_node_id(self.target)
-                self.send(node, self.last_ref)
-            except KeyError:
-                pass
+        if self.mission_done or self.popup_started or self.last_ref is None:
+            return
+        try:
+            node = self.resolve_node_id(self.target)
+            # In sim_mode on pipe legs, update the depth command to reflect the vehicle's
+            # current interpolated position along the segment.  This prevents the discrete
+            # depth jumps that cause the AUV to zig-zag between waypoints.
+            if self.sim_mode and self.current_ref_idx > 0:
+                seg_depth = self._compute_segment_depth()
+                if seg_depth is not None:
+                    dz         = imcpy.DesiredZ()
+                    dz.value   = max(1.0, seg_depth - self.altitude_m)
+                    dz.z_units = imcpy.ZUnits.DEPTH
+                    self.last_ref.z = dz
+            self.send(node, self.last_ref)
+        except KeyError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1210,6 +1260,8 @@ if __name__ == "__main__":
         description="Dive to depth then follow pipe at fixed altitude with optional sidescan sonar."
     )
     parser.add_argument("--target", default=DEFAULT_TARGET)
+    parser.add_argument("--csv", default="pipe_centerline_optimized.csv",
+                        help="CSV file with pipe centreline (columns: idx,lat,lon,depth_m).")
     parser.add_argument("--pipe-point", action="append", default=None,
                         help='Override pipe points: "lat,lon,depth". Repeat in order.')
     parser.add_argument("--input-radians", action="store_true")
@@ -1238,10 +1290,15 @@ if __name__ == "__main__":
     parser.add_argument("--plot-on-exit", action="store_true", default=DEFAULT_PLOT_ON_EXIT)
     args = parser.parse_args()
 
-    # Use CLI pipe-points if provided, otherwise fall back to hardcoded defaults
+    # Priority: --pipe-point > --csv > hardcoded defaults
     if args.pipe_point:
         parsed = [parse_pipe_point(p, input_in_radians=args.input_radians) for p in args.pipe_point]
+    elif args.csv and os.path.isfile(args.csv):
+        logger.info("Loading pipe centreline from %s", args.csv)
+        parsed = load_csv_pipe_points(args.csv)
     else:
+        if args.csv:
+            logger.warning("CSV file '%s' not found, falling back to hardcoded defaults.", args.csv)
         parsed = [
             (math.radians(lat), math.radians(lon), depth)
             for lat, lon, depth in DEFAULT_PIPE_POINTS

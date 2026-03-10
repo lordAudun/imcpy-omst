@@ -1,0 +1,12 @@
+timestamp_utc,elapsed_s,event_type,ref_idx,ref_name,lat_deg,lon_deg,depth_m,followref_state,detail
+2026-03-10T14:36:53.901517+00:00,17.78,start_position_locked,-1,,63.44072739,10.35258097,0.012,,
+2026-03-10T14:36:53.901909+00:00,17.78,mission_built,-1,,,,,,n_waypoints=17 dive_depth=25.2m (pipe=30.2m - alt=5.0m) side=right offset=20.0m
+2026-03-10T14:36:56.405599+00:00,20.28,followref_state_change,0,,63.44072753,10.352581,0.049,StateEnum.WAIT,prev=None -> now=StateEnum.WAIT proximity=1
+2026-03-10T14:36:56.409687+00:00,20.28,reference_sent,0,DIVE,63.44036114,10.34983431,25.22,StateEnum.WAIT,final=False z_mode=depth depth=25.2m
+2026-03-10T14:36:56.410369+00:00,20.29,followref_state_change,0,,63.44072753,10.352581,0.049,StateEnum.GOTO,prev=StateEnum.WAIT -> now=StateEnum.GOTO proximity=1
+2026-03-10T14:38:19.239253+00:00,103.11,sidescan_on,1,,63.44039865,10.35011086,25.293,,active=True
+2026-03-10T14:38:19.242131+00:00,103.12,reference_sent,1,PIPE0,63.44039571,10.35008999,30.22,StateEnum.GOTO,final=False z_mode=sim_depth sim_depth=25.2m (pipe=30.2m - alt=5.0m)
+2026-03-10T14:38:19.242782+00:00,103.12,followref_state_change,1,,63.44039865,10.35011086,25.293,StateEnum.LOITER,prev=StateEnum.GOTO -> now=StateEnum.LOITER proximity=6
+2026-03-10T14:38:19.247851+00:00,103.12,reference_sent,2,PIPE1,63.44040442,10.35203,59.93,StateEnum.LOITER,final=False z_mode=sim_depth sim_depth=54.9m (pipe=59.9m - alt=5.0m)
+2026-03-10T14:38:19.248590+00:00,103.12,followref_state_change,2,,63.44039865,10.35011086,25.293,StateEnum.GOTO,prev=StateEnum.LOITER -> now=StateEnum.GOTO proximity=1
+2026-03-10T14:39:17.287343+00:00,161.16,reference_sent,3,PIPE2,63.44119446,10.35473874,85.06,StateEnum.GOTO,final=False z_mode=sim_depth sim_depth=80.1m (pipe=85.1m - alt=5.0m)
