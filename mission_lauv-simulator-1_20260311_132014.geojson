@@ -1,0 +1,353 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            10.3500859633,
+            63.4405751198,
+            -30.22
+          ],
+          [
+            10.3519140583,
+            63.4405833333,
+            -59.93
+          ],
+          [
+            10.354505541,
+            63.4413382504,
+            -85.06
+          ],
+          [
+            10.3551316102,
+            63.4415903606,
+            -90.07
+          ],
+          [
+            10.3556644799,
+            63.4421819609,
+            -100.02
+          ],
+          [
+            10.3559132434,
+            63.442773465100004,
+            -108.98
+          ],
+          [
+            10.355445106000001,
+            63.44363767150001,
+            -114.99
+          ],
+          [
+            10.3549410453,
+            63.4443672078,
+            -120.0
+          ],
+          [
+            10.3542697744,
+            63.4449501803,
+            -124.94
+          ],
+          [
+            10.352864115,
+            63.4457471642,
+            -110.0
+          ],
+          [
+            10.3521499432,
+            63.44650935600001,
+            -110.01
+          ],
+          [
+            10.3520945642,
+            63.4475061785,
+            -122.97
+          ],
+          [
+            10.3519883311,
+            63.4487719116,
+            -127.04
+          ],
+          [
+            10.3517888866,
+            63.45064727150001,
+            -142.0
+          ],
+          [
+            10.351708682,
+            63.4523536937,
+            -161.91
+          ],
+          [
+            10.3517194444,
+            63.4535805556,
+            -200.0
+          ]
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3500859633,
+          63.4405751198,
+          -30.22
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 30.22
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3519140583,
+          63.4405833333,
+          -59.93
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 59.93
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.354505541,
+          63.4413382504,
+          -85.06
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 85.06
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3551316102,
+          63.4415903606,
+          -90.07
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 90.07
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3556644799,
+          63.4421819609,
+          -100.02
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 100.02
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3559132434,
+          63.442773465100004,
+          -108.98
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 108.98
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.355445106000001,
+          63.44363767150001,
+          -114.99
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 114.99
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3549410453,
+          63.4443672078,
+          -120.0
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 120.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3542697744,
+          63.4449501803,
+          -124.94
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 124.94
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.352864115,
+          63.4457471642,
+          -110.0
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 110.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3521499432,
+          63.44650935600001,
+          -110.01
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 110.01
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3520945642,
+          63.4475061785,
+          -122.97
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 122.97
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3519883311,
+          63.4487719116,
+          -127.04
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 127.04
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3517888866,
+          63.45064727150001,
+          -142.0
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 142.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.351708682,
+          63.4523536937,
+          -161.91
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 161.91
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          10.3517194444,
+          63.4535805556,
+          -200.0
+        ]
+      },
+      "properties": {
+        "layer": "pipe_centreline_pt",
+        "depth_m": 200.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": null,
+      "properties": {
+        "layer": "mission_metadata",
+        "target": "lauv-simulator-1",
+        "pipe_side": "right",
+        "pipe_offset_m": 20.0,
+        "depth_m": 30.22,
+        "speed_mps": 1.6,
+        "mission_done": false,
+        "n_waypoints": 0,
+        "n_track_pts": 0,
+        "n_sent_refs": 0,
+        "saved_utc": "2026-03-11T13:20:52.419264+00:00"
+      }
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+timestamp_utc,elapsed_s,event_type,ref_idx,ref_name,lat_deg,lon_deg,depth_m,followref_state,detail
+2026-03-11T13:21:30.728087+00:00,29.08,start_position_locked,-1,,63.44072738,10.352581,0.036,,
+2026-03-11T13:21:30.732761+00:00,29.08,mission_built,-1,,,,,,n_waypoints=17 dive_depth=25.2m (pipe=30.2m - alt=5.0m) side=right offset=20.0m
+2026-03-11T13:21:31.729915+00:00,30.08,followref_state_change,0,,63.44072743,10.352581,0.0,StateEnum.WAIT,prev=None -> now=StateEnum.WAIT proximity=1
+2026-03-11T13:21:31.732743+00:00,30.08,reference_sent,0,DIVE,63.44036114,10.34983433,25.22,StateEnum.WAIT,final=False z_mode=depth depth=25.2m
+2026-03-11T13:21:31.733651+00:00,30.08,followref_state_change,0,,63.44072743,10.352581,0.0,StateEnum.GOTO,prev=StateEnum.WAIT -> now=StateEnum.GOTO proximity=1
+2026-03-11T13:22:54.773634+00:00,113.12,sidescan_on,1,,63.44039912,10.35011434,25.336,,active=True
+2026-03-11T13:22:54.774586+00:00,113.12,reference_sent,1,PIPE0,63.44039571,10.35008999,30.22,StateEnum.GOTO,final=False z_mode=sim_depth sim_depth=25.2m (pipe=30.2m - alt=5.0m)
+2026-03-11T13:22:54.774794+00:00,113.12,followref_state_change,1,,63.44039912,10.35011434,25.336,StateEnum.LOITER,prev=StateEnum.GOTO -> now=StateEnum.LOITER proximity=6
+2026-03-11T13:22:54.775721+00:00,113.12,reference_sent,2,PIPE1,63.44040442,10.35203,59.93,StateEnum.LOITER,final=False z_mode=sim_depth sim_depth=54.9m (pipe=59.9m - alt=5.0m)
+2026-03-11T13:22:54.776119+00:00,113.12,followref_state_change,2,,63.44039912,10.35011434,25.336,StateEnum.GOTO,prev=StateEnum.LOITER -> now=StateEnum.GOTO proximity=1
+2026-03-11T13:23:51.832694+00:00,170.18,followref_state_change,2,,63.44039885,10.35173585,44.433,StateEnum.ELEVATOR,prev=StateEnum.GOTO -> now=StateEnum.ELEVATOR proximity=2
+2026-03-11T13:24:16.851757+00:00,195.2,followref_state_change,2,,63.44034057,10.35210912,53.963,StateEnum.LOITER,prev=StateEnum.ELEVATOR -> now=StateEnum.LOITER proximity=6
+2026-03-11T13:24:16.853141+00:00,195.2,reference_sent,3,PIPE2,63.44119446,10.35473874,85.06,StateEnum.LOITER,final=False z_mode=sim_depth sim_depth=80.1m (pipe=85.1m - alt=5.0m)
+2026-03-11T13:24:16.853412+00:00,195.2,followref_state_change,3,,63.44034057,10.35210912,53.963,StateEnum.GOTO,prev=StateEnum.LOITER -> now=StateEnum.GOTO proximity=1
+2026-03-11T13:25:50.949449+00:00,289.3,followref_state_change,3,,63.44113251,10.35450079,77.043,StateEnum.LOITER,prev=StateEnum.GOTO -> now=StateEnum.LOITER proximity=6
+2026-03-11T13:25:50.950549+00:00,289.3,reference_sent,4,PIPE3,63.44148336,10.35545533,90.07,StateEnum.LOITER,final=False z_mode=sim_depth sim_depth=85.1m (pipe=90.1m - alt=5.0m)
+2026-03-11T13:25:50.951077+00:00,289.3,followref_state_change,4,,63.44113251,10.35450079,77.043,StateEnum.GOTO,prev=StateEnum.LOITER -> now=StateEnum.GOTO proximity=1
+2026-03-11T13:26:17.979600+00:00,316.33,followref_state_change,4,,63.44140749,10.35523444,83.096,StateEnum.LOITER,prev=StateEnum.GOTO -> now=StateEnum.LOITER proximity=6
+2026-03-11T13:26:17.982974+00:00,316.33,reference_sent,5,PIPE4,63.4421291,10.35603636,100.02,StateEnum.LOITER,final=False z_mode=sim_depth sim_depth=95.0m (pipe=100.0m - alt=5.0m)
+2026-03-11T13:26:17.983904+00:00,316.33,followref_state_change,5,,63.44140749,10.35523444,83.096,StateEnum.GOTO,prev=StateEnum.LOITER -> now=StateEnum.GOTO proximity=1
+2026-03-11T13:27:01.023849+00:00,359.37,followref_state_change,5,,63.44201041,10.35589857,92.349,StateEnum.LOITER,prev=StateEnum.GOTO -> now=StateEnum.LOITER proximity=6
+2026-03-11T13:27:01.027805+00:00,359.38,reference_sent,6,PIPE5,63.44277513,10.35630785,108.98,StateEnum.LOITER,final=False z_mode=sim_depth sim_depth=104.0m (pipe=109.0m - alt=5.0m)
+2026-03-11T13:27:01.028655+00:00,359.38,followref_state_change,6,,63.44201041,10.35589857,92.349,StateEnum.GOTO,prev=StateEnum.LOITER -> now=StateEnum.GOTO proximity=1
+2026-03-11T13:27:42.063866+00:00,400.41,followref_state_change,6,,63.44264171,10.35623388,101.41,StateEnum.LOITER,prev=StateEnum.GOTO -> now=StateEnum.LOITER proximity=6
+2026-03-11T13:27:42.067702+00:00,400.42,reference_sent,7,PIPE6,63.44368109,10.35581791,114.99,StateEnum.LOITER,final=False z_mode=sim_depth sim_depth=110.0m (pipe=115.0m - alt=5.0m)
+2026-03-11T13:27:42.068603+00:00,400.42,followref_state_change,7,,63.44264171,10.35623388,101.41,StateEnum.GOTO,prev=StateEnum.LOITER -> now=StateEnum.GOTO proximity=1
+2026-03-11T13:28:40.121847+00:00,458.47,followref_state_change,7,,63.44355663,10.35587644,109.044,StateEnum.LOITER,prev=StateEnum.GOTO -> now=StateEnum.LOITER proximity=6
+2026-03-11T13:28:40.124896+00:00,458.47,reference_sent,8,PIPE7,63.44443009,10.35530119,120.0,StateEnum.LOITER,final=False z_mode=sim_depth sim_depth=115.0m (pipe=120.0m - alt=5.0m)
+2026-03-11T13:28:40.125734+00:00,458.47,followref_state_change,8,,63.44355663,10.35587644,109.044,StateEnum.GOTO,prev=StateEnum.LOITER -> now=StateEnum.GOTO proximity=1
