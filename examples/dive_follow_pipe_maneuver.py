@@ -39,9 +39,9 @@ DEFAULT_TARGET        = "lauv-simulator-1"
 DEFAULT_ALTITUDE_M    = 5.0
 DEFAULT_OFFSET_M      = 20.0
 DEFAULT_SIDE          = "right"
-DEFAULT_SPEED_MPS     = 1.6
+DEFAULT_SPEED_MPS     = 2.5
 DEFAULT_MAX_PITCH_DEG = 12.0
-DEFAULT_SIM_MODE      = False
+DEFAULT_SIM_MODE      = True   # if True, use depth=(pipe_depth-altitude) for pipe legs instead of ZUnits.ALTITUDE
 
 
 # ── CSV loader ────────────────────────────────────────────────────────────────
@@ -369,8 +369,8 @@ class FollowPipe(DynamicActor):
 
         # After advancing, skip processing for one periodic cycle (1 s) so the
         # vehicle has time to process the new reference before we can advance again.
-        if self._just_advanced:
-            return
+        #if self._just_advanced:
+        #    return
 
         xy_near   = bool(msg.proximity & imcpy.FollowRefState.ProximityBits.XY_NEAR)
         z_near    = bool(msg.proximity & imcpy.FollowRefState.ProximityBits.Z_NEAR)
@@ -391,7 +391,7 @@ class FollowPipe(DynamicActor):
         # has time to reach the vehicle before we start re-sending it.
         if self._just_advanced:
             self._just_advanced = False
-            return
+            #return 
         try:
             self.send(self.resolve_node_id(self.target), self.last_ref)
         except KeyError:
@@ -498,8 +498,8 @@ if __name__ == "__main__":
                     help="Lateral offset from pipe centreline (m)")
     ap.add_argument("--speed",          type=float, default=DEFAULT_SPEED_MPS)
     ap.add_argument("--max-pitch-deg",  type=float, default=DEFAULT_MAX_PITCH_DEG)
-    ap.add_argument("--sim-mode",       action="store_true", default=False,
-                    help="Use depth=(pipe_depth-altitude) instead of ZUnits.ALTITUDE (default: altitude mode)")
+    ap.add_argument("--sim-mode",       action="store_true", default=DEFAULT_SIM_MODE,
+                    help="Use depth=(pipe_depth-altitude) instead of ZUnits.ALTITUDE")
     ap.add_argument("--popup-duration", type=int,   default=30)
     ap.add_argument("--popup-timeout",  type=int,   default=120)
     ap.add_argument("--no-plot",        action="store_true")
