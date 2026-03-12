@@ -1,6 +1,0 @@
-timestamp_utc,elapsed_s,event_type,ref_idx,ref_name,lat_deg,lon_deg,depth_m,followref_state,detail
-2026-03-11T13:32:25.416764+00:00,19.18,start_position_locked,-1,,63.44072741,10.352581,0.026,,
-2026-03-11T13:32:25.417875+00:00,19.19,mission_built,-1,,,,,,n_waypoints=16 dive_depth=54.9m (pipe=59.9m - alt=5.0m) side=right offset=20.0m
-2026-03-11T13:32:26.719508+00:00,20.49,followref_state_change,0,,63.44072748,10.352581,0.106,StateEnum.WAIT,prev=None -> now=StateEnum.WAIT proximity=1
-2026-03-11T13:32:26.724465+00:00,20.49,reference_sent,0,DIVE,63.43841707,10.34906894,54.93,StateEnum.WAIT,final=False z_mode=depth depth=54.9m
-2026-03-11T13:32:26.725176+00:00,20.49,followref_state_change,0,,63.44072748,10.352581,0.106,StateEnum.GOTO,prev=StateEnum.WAIT -> now=StateEnum.GOTO proximity=1

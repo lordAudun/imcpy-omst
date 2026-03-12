@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Dive + single-pass pipe scan using FollowReference.
+Dive + single-pass pipe scan using FollowReference — altitude mode only.
 
   1. Load pipe centreline from CSV (lat, lon, depth_m).
   2. Offset the path laterally (left / right).
-  3. Compute a dive waypoint back-projected along the pipe heading so
-     the vehicle reaches operating depth at the first offset waypoint.
-  4. Send one waypoint at a time with a fixed commanded depth:
-       - dive leg   : depth = first_pipe_depth − altitude_m
-       - pipe legs  : sim_mode  → depth  = pipe_depth − altitude_m
-                      real mode → altitude = altitude_m (ZUnits.ALTITUDE)
-  5. Advance when XY_NEAR or vehicle enters LOITER / HOVER / WAIT.
+  3. Compute a dive waypoint (ZUnits.DEPTH) so the vehicle reaches
+     operating depth at the first pipe waypoint.
+  4. All pipe waypoints use ZUnits.ALTITUDE = altitude_m.
+     DUNE's altitude controller (DVL bottom-track) handles depth.
+  5. Advance when (XY_NEAR AND Z_NEAR) or vehicle enters LOITER/HOVER/WAIT.
   6. PopUp at the final waypoint.
 """
 
@@ -41,10 +39,9 @@ DEFAULT_OFFSET_M      = 20.0
 DEFAULT_SIDE          = "right"
 DEFAULT_SPEED_MPS     = 1.6
 DEFAULT_MAX_PITCH_DEG = 12.0
-DEFAULT_SIM_MODE      = False
 
 
-# ── CSV loader ────────────────────────────────────────────────────────────────
+# ── CSV loader ─────────────────────────────────────────────────────────────────
 def load_csv(path: str) -> List[Tuple[float, float, float]]:
     """Return [(lat_rad, lon_rad, depth_m), ...] from a pipe-centreline CSV."""
     pts = []
@@ -60,20 +57,19 @@ def load_csv(path: str) -> List[Tuple[float, float, float]]:
     return pts
 
 
-# ── actor ─────────────────────────────────────────────────────────────────────
-class FollowPipe(DynamicActor):
-    """FollowReference actor for a single-pass offset pipe survey."""
+# ── actor ──────────────────────────────────────────────────────────────────────
+class FollowPipeAltitude(DynamicActor):
+    """FollowReference actor — dive to depth, then follow pipe at fixed altitude."""
 
     def __init__(
         self,
         target: str,
-        pipe_pts: List[Tuple[float, float, float]],   # (lat_rad, lon_rad, depth_m)
+        pipe_pts: List[Tuple[float, float, float]],
         altitude_m: float    = DEFAULT_ALTITUDE_M,
         side: str            = DEFAULT_SIDE,
         offset_m: float      = DEFAULT_OFFSET_M,
         speed_mps: float     = DEFAULT_SPEED_MPS,
         max_pitch_deg: float = DEFAULT_MAX_PITCH_DEG,
-        sim_mode: bool       = DEFAULT_SIM_MODE,
         popup_duration: int  = 30,
         popup_timeout: int   = 120,
     ):
@@ -87,7 +83,6 @@ class FollowPipe(DynamicActor):
         self.offset_m      = float(offset_m)
         self.speed_mps     = float(speed_mps)
         self.max_pitch_deg = float(max_pitch_deg)
-        self.sim_mode      = bool(sim_mode)
         self.popup_duration = int(popup_duration)
         self.popup_timeout  = int(popup_timeout)
 
@@ -98,34 +93,35 @@ class FollowPipe(DynamicActor):
         self.fr_state       = None
         self.mission_done   = False
         self.popup_started  = False
-        self._just_advanced = False   # blocks one periodic_ref cycle after each advance
+        self._just_advanced = False
 
-        # vehicle position
+        # vehicle state
         self.lat       = 0.0
         self.lon       = 0.0
         self.depth     = 0.0
+        self.altitude  = -1.0   # metres above bottom from DVL (-1 = unknown)
         self.start_lat: Optional[float] = None
         self.start_lon: Optional[float] = None
 
         # recording for plot
-        self.track:          List[Tuple[float, float, float]] = []  # (lat, lon, depth)
-        self.track_desired:  List[float]                      = []  # commanded depth
-        self.track_elapsed:  List[float]                      = []  # seconds since t0
+        self.track:         List[Tuple[float, float, float]] = []  # (lat, lon, depth)
+        self.track_alt:     List[float]                      = []  # DVL altitude
+        self.track_elapsed: List[float]                      = []  # seconds since t0
         self.t0 = time.time()
 
-    # ── geometry ──────────────────────────────────────────────────────────────
+    # ── geometry ───────────────────────────────────────────────────────────────
     def _build_waypoints(self) -> List[Tuple[float, float, float]]:
         """
-        Returns [(lat_rad, lon_rad, commanded_depth_m), ...]:
-          index 0   = DIVE waypoint
-          index 1…N = lateral-offset pipe waypoints
+        Returns [(lat_rad, lon_rad, z_value), ...]:
+          index 0   = DIVE waypoint  (z = depth in metres, ZUnits.DEPTH)
+          index 1…N = pipe waypoints (z = altitude_m,      ZUnits.ALTITUDE)
         """
         ll     = [(la, lo) for la, lo, _  in self.pipe_pts]
         depths = [d        for _,  _,  d  in self.pipe_pts]
         lat0, lon0 = ll[0]
         cos0 = math.cos(lat0)
 
-        # convert centreline to local NE (metres)
+        # centreline → local NE (metres)
         ne = [((la - lat0) * EARTH_RADIUS_M,
                (lo - lon0) * EARTH_RADIUS_M * cos0) for la, lo in ll]
 
@@ -136,7 +132,7 @@ class FollowPipe(DynamicActor):
         ll_off = [imcpy.coordinates.WGS84.displace(lat0, lon0, n=n, e=e)
                   for n, e in ne_off]
 
-        # dive waypoint: back-project along the approach heading
+        # dive waypoint: back-project along approach heading
         first_lat, first_lon = ll_off[0]
         dn = (first_lat - self.start_lat) * EARTH_RADIUS_M
         de = (first_lon - self.start_lon) * EARTH_RADIUS_M * math.cos(self.start_lat)
@@ -154,9 +150,8 @@ class FollowPipe(DynamicActor):
         )
 
         wps = [(dive_lat, dive_lon, dive_depth)]
-        for i, (la, lo) in enumerate(ll_off):
-            cmd = max(1.0, depths[i] - self.altitude_m) if self.sim_mode else self.altitude_m
-            wps.append((la, lo, cmd))
+        for la, lo in ll_off:
+            wps.append((la, lo, self.altitude_m))
         return wps
 
     def _offset_ne(self, ne: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
@@ -201,9 +196,12 @@ class FollowPipe(DynamicActor):
         out.append((ne[-1][0]+d*norms[-1][0], ne[-1][1]+d*norms[-1][1]))
         return out
 
-    # ── reference / popup ─────────────────────────────────────────────────────
+    # ── reference / popup ──────────────────────────────────────────────────────
     def _send_wp(self, idx: int) -> None:
-        """Build and send a Reference message for waypoint idx."""
+        """Send Reference for waypoint idx.
+        idx == 0 : ZUnits.DEPTH   (dive leg)
+        idx  > 0 : ZUnits.ALTITUDE (pipe legs — DUNE altitude controller)
+        """
         if self.waypoints is None or idx >= len(self.waypoints):
             return
         try:
@@ -211,18 +209,18 @@ class FollowPipe(DynamicActor):
         except KeyError:
             return
 
-        lat, lon, depth = self.waypoints[idx]
+        lat, lon, z_val = self.waypoints[idx]
 
         r     = imcpy.Reference()
         r.lat = lat
         r.lon = lon
 
         dz = imcpy.DesiredZ()
-        if idx == 0 or self.sim_mode:
-            dz.value   = depth
+        if idx == 0:
+            dz.value   = z_val            # dive depth
             dz.z_units = imcpy.ZUnits.DEPTH
         else:
-            dz.value   = self.altitude_m
+            dz.value   = self.altitude_m  # constant altitude for all pipe legs
             dz.z_units = imcpy.ZUnits.ALTITUDE
         r.z = dz
 
@@ -238,12 +236,12 @@ class FollowPipe(DynamicActor):
         self.last_ref = r
         self.send(node, r)
 
-        tag = "DIVE" if idx == 0 else f"PIPE{idx-1}"
-        logger.info("WP %d (%s)  lat=%.6f lon=%.6f depth/alt=%.1f",
-                    idx, tag, math.degrees(lat), math.degrees(lon), depth)
+        tag    = "DIVE" if idx == 0 else f"PIPE{idx-1}"
+        z_desc = f"depth={z_val:.1f} m" if idx == 0 else f"altitude={self.altitude_m:.1f} m"
+        logger.info("WP %d (%s)  lat=%.6f lon=%.6f  %s",
+                    idx, tag, math.degrees(lat), math.degrees(lon), z_desc)
 
     def _advance(self) -> None:
-        """Move to the next waypoint, or start PopUp at the last one."""
         if self.waypoints is None:
             return
         if self.wp_idx >= len(self.waypoints) - 1:
@@ -292,10 +290,9 @@ class FollowPipe(DynamicActor):
         self.last_ref      = None
         logger.info("PopUp maneuver started")
 
-    # ── IMC handlers ──────────────────────────────────────────────────────────
+    # ── IMC handlers ───────────────────────────────────────────────────────────
     @Periodic(10)
     def _start_followref(self):
-        """Send the FollowReference plan every 10 s until the vehicle responds."""
         if self.fr_state is not None:
             return
         try:
@@ -333,11 +330,11 @@ class FollowPipe(DynamicActor):
         if not self._from_target(msg):
             return
         self.lat, self.lon, _ = imcpy.coordinates.toWGS84(msg)
-        self.depth = float(msg.depth)
+        self.depth    = float(msg.depth)
+        self.altitude = float(msg.alt)   # DVL altitude above bottom (-1 if unknown)
 
-        desired = self.waypoints[self.wp_idx][2] if self.waypoints else 0.0
         self.track.append((self.lat, self.lon, self.depth))
-        self.track_desired.append(desired)
+        self.track_alt.append(self.altitude)
         self.track_elapsed.append(time.time() - self.t0)
 
         if self.start_lat is None:
@@ -346,11 +343,12 @@ class FollowPipe(DynamicActor):
             logger.info("Start locked: %.6f %.6f",
                         math.degrees(self.lat), math.degrees(self.lon))
             self.waypoints = self._build_waypoints()
-            logger.info("Mission built: %d waypoints", len(self.waypoints))
-            for i, (la, lo, d) in enumerate(self.waypoints):
+            logger.info("Mission built: %d waypoints (dive depth=%.1f m, pipe altitude=%.1f m)",
+                        len(self.waypoints), self.waypoints[0][2], self.altitude_m)
+            for i, (la, lo, z) in enumerate(self.waypoints):
                 tag = "DIVE" if i == 0 else f"PIPE{i-1}"
-                logger.info("  %s  lat=%.6f lon=%.6f depth=%.1f",
-                            tag, math.degrees(la), math.degrees(lo), d)
+                logger.info("  %s  lat=%.6f lon=%.6f  z=%.1f",
+                            tag, math.degrees(la), math.degrees(lo), z)
 
     @Subscribe(imcpy.FollowRefState)
     def _recv_frs(self, msg: imcpy.FollowRefState):
@@ -361,14 +359,11 @@ class FollowPipe(DynamicActor):
 
         self.fr_state = msg.state
 
-        # Send the first waypoint as soon as FollowReference is active
         if self.last_ref is None:
             self.wp_idx = 0
             self._send_wp(0)
             return
 
-        # After advancing, skip processing for one periodic cycle (1 s) so the
-        # vehicle has time to process the new reference before we can advance again.
         if self._just_advanced:
             return
 
@@ -384,11 +379,8 @@ class FollowPipe(DynamicActor):
 
     @Periodic(1.0)
     def _periodic_ref(self):
-        """Resend the current reference every second to keep FollowRef alive."""
         if self.mission_done or self.popup_started or self.last_ref is None:
             return
-        # Clear the advance-guard and skip this cycle so the new reference
-        # has time to reach the vehicle before we start re-sending it.
         if self._just_advanced:
             self._just_advanced = False
             return
@@ -403,7 +395,7 @@ class FollowPipe(DynamicActor):
         except KeyError:
             return False
 
-    # ── plot ──────────────────────────────────────────────────────────────────
+    # ── plot ───────────────────────────────────────────────────────────────────
     def plot(self) -> None:
         try:
             import matplotlib.pyplot as plt
@@ -457,49 +449,51 @@ class FollowPipe(DynamicActor):
         ax2d.grid(True, color="#21262d", lw=0.6)
         ax2d.legend(facecolor="#161b22", edgecolor="#30363d", labelcolor="#e6edf3", fontsize=8)
 
-        # Depth vs time  —  actual depth + one commanded depth per waypoint
+        # Depth + DVL altitude vs time
         axdp.plot(self.track_elapsed, tr_depths,
-                  "-",  color="#f85149", lw=1.2, label="Actual depth")
-        axdp.plot(self.track_elapsed, self.track_desired,
-                  "--", color="#58a6ff", lw=1.5, label="Commanded depth (per waypoint)")
+                  "-", color="#f85149", lw=1.2, label="Actual depth")
+        valid_alt = [(t, a) for t, a in zip(self.track_elapsed, self.track_alt) if a >= 0]
+        if valid_alt:
+            ta, aa = zip(*valid_alt)
+            axdp.plot(ta, aa, "-", color="#3fb950", lw=1.2, label="DVL altitude above bottom")
+        axdp.axhline(self.altitude_m, color="#58a6ff", lw=1.5, ls="--",
+                     label=f"Commanded altitude ({self.altitude_m:.1f} m)")
         axdp.invert_yaxis()
-        axdp.set_xlabel("Elapsed time [s]"); axdp.set_ylabel("Depth [m]")
-        axdp.set_title("Actual vs Commanded depth", fontsize=11, fontweight="bold")
+        axdp.set_xlabel("Elapsed time [s]"); axdp.set_ylabel("Depth / Altitude [m]")
+        axdp.set_title("Depth and Altitude vs Time", fontsize=11, fontweight="bold")
         axdp.grid(True, color="#21262d", lw=0.6)
         axdp.legend(facecolor="#161b22", edgecolor="#30363d", labelcolor="#e6edf3", fontsize=8)
 
         fig.suptitle(
-            f"Pipe Follow Mission  |  {self.side} offset {self.offset_m:.0f} m"
-            f"  |  alt {self.altitude_m:.1f} m",
+            f"Pipe Follow Mission (altitude mode)  |  {self.side} offset {self.offset_m:.0f} m"
+            f"  |  altitude {self.altitude_m:.1f} m",
             color="#e6edf3", fontsize=13, fontweight="bold")
         fig.tight_layout()
 
         ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = f"pipe_mission_{ts}.png"
+        out = f"pipe_altitude_mission_{ts}.png"
         fig.savefig(out, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
         logger.info("Plot saved: %s", out)
         plt.show()
 
 
-# ── entry point ───────────────────────────────────────────────────────────────
+# ── entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
-    ap = argparse.ArgumentParser(description="Dive + pipe-scan via FollowReference")
+    ap = argparse.ArgumentParser(description="Dive + pipe-scan via FollowReference (altitude mode)")
     ap.add_argument("--target",         default=DEFAULT_TARGET)
     ap.add_argument("--csv",            default="pipe_centerline_optimized.csv",
                     help="CSV with columns: idx,lat,lon,depth_m")
     ap.add_argument("--start-idx",      type=int, default=0,
-                    help="Skip CSV rows before this idx value (default: 0)")
+                    help="Skip CSV rows before this index (default: 0)")
     ap.add_argument("--altitude",       type=float, default=DEFAULT_ALTITUDE_M,
-                    help="Altitude above seafloor for pipe legs (m)")
+                    help="Altitude above seafloor for all pipe legs (m)")
     ap.add_argument("--side",           choices=("left", "right"), default=DEFAULT_SIDE)
     ap.add_argument("--offset",         type=float, default=DEFAULT_OFFSET_M,
                     help="Lateral offset from pipe centreline (m)")
     ap.add_argument("--speed",          type=float, default=DEFAULT_SPEED_MPS)
     ap.add_argument("--max-pitch-deg",  type=float, default=DEFAULT_MAX_PITCH_DEG)
-    ap.add_argument("--sim-mode",       action="store_true", default=False,
-                    help="Use depth=(pipe_depth-altitude) instead of ZUnits.ALTITUDE (default: altitude mode)")
     ap.add_argument("--popup-duration", type=int,   default=30)
     ap.add_argument("--popup-timeout",  type=int,   default=120)
     ap.add_argument("--no-plot",        action="store_true")
@@ -515,9 +509,10 @@ if __name__ == "__main__":
         if len(pipe_pts) < 2:
             logger.error("--start-idx %d leaves fewer than 2 points", args.start_idx)
             sys.exit(1)
-        logger.info("Starting from CSV index %d (%d points remaining)", args.start_idx, len(pipe_pts))
+        logger.info("Starting from CSV index %d (%d points remaining)",
+                    args.start_idx, len(pipe_pts))
 
-    actor = FollowPipe(
+    actor = FollowPipeAltitude(
         target        = args.target,
         pipe_pts      = pipe_pts,
         altitude_m    = args.altitude,
@@ -525,7 +520,6 @@ if __name__ == "__main__":
         offset_m      = args.offset,
         speed_mps     = args.speed,
         max_pitch_deg = args.max_pitch_deg,
-        sim_mode      = args.sim_mode,
         popup_duration = args.popup_duration,
         popup_timeout  = args.popup_timeout,
     )
