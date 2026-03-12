@@ -38,9 +38,9 @@ EARTH_RADIUS_M = 6_378_137.0
 DEFAULT_TARGET        = "lauv-simulator-1"
 DEFAULT_ALTITUDE_M    = 5.0
 DEFAULT_OFFSET_M      = 20.0
-DEFAULT_SIDE          = "right"
+DEFAULT_SIDE          = "left"
 DEFAULT_SPEED_MPS     = 2.5
-DEFAULT_MAX_PITCH_DEG = 12.0
+DEFAULT_MAX_PITCH_DEG = 13.0
 DEFAULT_SIM_MODE      = True   # if True, use depth=(pipe_depth-altitude) for pipe legs instead of ZUnits.ALTITUDE
 
 
@@ -138,6 +138,7 @@ class FollowPipe(DynamicActor):
 
         # dive waypoint: back-project along the approach heading
         first_lat, first_lon = ll_off[0]
+        second_lat, second_lon = ll_off[1] # The next waypoint is used to determine the pipe heading at the start point, which is important for computing the dive point. If the first two points in the CSV are identical, we fall back to using the first and third points (if available) to determine the heading. If all points are identical, the dive point will be directly above the first point.
         dn = (first_lat - self.start_lat) * EARTH_RADIUS_M
         de = (first_lon - self.start_lon) * EARTH_RADIUS_M * math.cos(self.start_lat)
         if math.hypot(dn, de) < 1e-6 and len(ll_off) > 1:
@@ -146,11 +147,13 @@ class FollowPipe(DynamicActor):
 
         dive_depth = max(1.0, depths[0] - self.altitude_m)
         heading    = math.atan2(de, dn)
+        #heading   = math.atan2(second_lon - first_lon, second_lat - first_lat)
         run        = dive_depth / math.tan(math.radians(abs(self.max_pitch_deg)))
+        effective_run = min(run, math.hypot(dn, de))
         dive_lat, dive_lon = imcpy.coordinates.WGS84.displace(
-            self.start_lat, self.start_lon,
-            n=math.cos(heading) * run,
-            e=math.sin(heading) * run,
+            first_lat, first_lon,
+            n=-math.cos(heading) * effective_run,
+            e=-math.sin(heading) * effective_run,
         )
 
         wps = [(dive_lat, dive_lon, dive_depth)]
@@ -487,7 +490,7 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(description="Dive + pipe-scan via FollowReference")
     ap.add_argument("--target",         default=DEFAULT_TARGET)
-    ap.add_argument("--csv",            default="pipe_centerline_optimized.csv",
+    ap.add_argument("--csv",            default="pipe_centerline_auv_underwater.csv",
                     help="CSV with columns: idx,lat,lon,depth_m")
     ap.add_argument("--start-idx",      type=int, default=0,
                     help="Skip CSV rows before this idx value (default: 0)")
