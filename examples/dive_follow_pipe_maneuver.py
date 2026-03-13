@@ -38,10 +38,10 @@ EARTH_RADIUS_M = 6_378_137.0
 DEFAULT_TARGET        = "lauv-simulator-1"
 DEFAULT_ALTITUDE_M    = 5.0
 DEFAULT_OFFSET_M      = 20.0
-DEFAULT_SIDE          = "left"
+DEFAULT_SIDE          = "right"
 DEFAULT_SPEED_MPS     = 2.5
-DEFAULT_MAX_PITCH_DEG = 13.0
-DEFAULT_SIM_MODE      = True   # if True, use depth=(pipe_depth-altitude) for pipe legs instead of ZUnits.ALTITUDE
+DEFAULT_MAX_PITCH_DEG = 15.0
+DEFAULT_SIM_MODE      = False   # if True, use depth=(pipe_depth-altitude) for pipe legs instead of ZUnits.ALTITUDE
 
 
 # ── CSV loader ────────────────────────────────────────────────────────────────
@@ -136,30 +136,46 @@ class FollowPipe(DynamicActor):
         ll_off = [imcpy.coordinates.WGS84.displace(lat0, lon0, n=n, e=e)
                   for n, e in ne_off]
 
-        # dive waypoint: back-project along the approach heading
         first_lat, first_lon = ll_off[0]
-        second_lat, second_lon = ll_off[1] # The next waypoint is used to determine the pipe heading at the start point, which is important for computing the dive point. If the first two points in the CSV are identical, we fall back to using the first and third points (if available) to determine the heading. If all points are identical, the dive point will be directly above the first point.
-        dn = (first_lat - self.start_lat) * EARTH_RADIUS_M
-        de = (first_lon - self.start_lon) * EARTH_RADIUS_M * math.cos(self.start_lat)
-        if math.hypot(dn, de) < 1e-6 and len(ll_off) > 1:
-            dn = (ll_off[1][0] - first_lat) * EARTH_RADIUS_M
-            de = (ll_off[1][1] - first_lon) * EARTH_RADIUS_M * math.cos(first_lat)
+        target_depth = max(1.0, depths[0] - self.altitude_m)
 
-        dive_depth = max(1.0, depths[0] - self.altitude_m)
-        heading    = math.atan2(de, dn)
-        #heading   = math.atan2(second_lon - first_lon, second_lat - first_lat)
-        run        = dive_depth / math.tan(math.radians(abs(self.max_pitch_deg)))
-        effective_run = min(run, math.hypot(dn, de))
+        # local pipe heading from first segment of offset path
+        if len(ll_off) < 2:
+            raise ValueError("Need at least 2 offset waypoints to define dive heading.")
+
+        dn_pipe = (ll_off[1][0] - ll_off[0][0]) * EARTH_RADIUS_M
+        de_pipe = (ll_off[1][1] - ll_off[0][1]) * EARTH_RADIUS_M * math.cos(first_lat)
+        seg_len = math.hypot(dn_pipe, de_pipe)
+
+        if seg_len < 1e-6:
+            raise ValueError("First two offset waypoints are identical; cannot define dive heading.")
+
+        heading = math.atan2(de_pipe, dn_pipe)
+        run = target_depth / math.tan(math.radians(abs(self.max_pitch_deg)))
+
+        dn_start = (first_lat - self.start_lat) * EARTH_RADIUS_M
+        de_start = (first_lon - self.start_lon) * EARTH_RADIUS_M * math.cos(first_lat)
+        start_dist = math.hypot(dn_start, de_start)
+        if start_dist < run:
+            logger.warning(
+                "Start distance to first waypoint is %.1f m, but %.1f m is needed "
+                "to reach %.1f m depth with max pitch %.1f deg",
+                start_dist, run, target_depth, self.max_pitch_deg
+            )
+
         dive_lat, dive_lon = imcpy.coordinates.WGS84.displace(
             first_lat, first_lon,
-            n=-math.cos(heading) * effective_run,
-            e=-math.sin(heading) * effective_run,
+            n=-math.cos(heading) * run,
+            e=-math.sin(heading) * run,
         )
 
-        wps = [(dive_lat, dive_lon, dive_depth)]
+        surface_depth = 0.0
+        wps = [(dive_lat, dive_lon, surface_depth)]
+
         for i, (la, lo) in enumerate(ll_off):
             cmd = max(1.0, depths[i] - self.altitude_m) if self.sim_mode else self.altitude_m
             wps.append((la, lo, cmd))
+
         return wps
 
     def _offset_ne(self, ne: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
