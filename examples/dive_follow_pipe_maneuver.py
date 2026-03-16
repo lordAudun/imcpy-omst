@@ -35,13 +35,13 @@ logger = logging.getLogger(__name__)
 EARTH_RADIUS_M = 6_378_137.0
 
 # ── defaults ──────────────────────────────────────────────────────────────────
-DEFAULT_TARGET        = "lauv-simulator-1"
+DEFAULT_TARGET        = "lauv-marie"
 DEFAULT_ALTITUDE_M    = 5.0
 DEFAULT_OFFSET_M      = 20.0
 DEFAULT_SIDE          = "right"
 DEFAULT_SPEED_MPS     = 2.5
-DEFAULT_MAX_PITCH_DEG = 15.0
-DEFAULT_SIM_MODE      = True   # if True, use depth=(pipe_depth-altitude) for pipe legs instead of ZUnits.ALTITUDE
+DEFAULT_MAX_PITCH_DEG = 12.0 # Safety margin for dive leg, in case of currents or imperfect heading control
+DEFAULT_SIM_MODE      = False   # if True, use depth=(pipe_depth-altitude) for pipe legs instead of ZUnits.ALTITUDE
 
 
 # ── CSV loader ────────────────────────────────────────────────────────────────
